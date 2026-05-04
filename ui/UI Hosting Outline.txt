@@ -1,0 +1,4 @@
+The plan for the UI is to host a react app locally.  
+The hosting will be done with a very simple flask app using jinja to host templates.  This allows data to easily be passed to the UI from the rest of the app.
+A basic pythonj module will include the configuration and interface for the web UI.  It will expose methods to the rest of the codebase to start the UI, as well as any other methods needed to pass data into the UI.
+This layer will also be responsable for collecting user input and calling into the rest of the app to hand that input off to other modules.
