@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}PeerChat UI{% endblock %}
+
+{% block content %}
+<section class="chat-card">
+  <header class="chat-header">
+    <div>
+      <p class="eyebrow">PeerChat</p>
+      <h1>Chat interface skeleton</h1>
+    </div>
+    <p class="subtitle">Flask, Jinja2, and HTMX wired for incremental chat updates.</p>
+  </header>
+
+  <section id="message-stream" class="message-stream" aria-live="polite">
+    {% include "partials/message_list.html" %}
+  </section>
+
+  <form
+    class="composer"
+    hx-post="{{ url_for('post_message') }}"
+    hx-target="#message-stream"
+    hx-swap="innerHTML"
+  >
+    <label class="sr-only" for="message">Message</label>
+    <textarea id="message" name="message" rows="3" placeholder="Write a message..."></textarea>
+    <div class="composer-actions">
+      <p class="hint">Enter a message to simulate the chat flow.</p>
+      <button type="submit">Send</button>
+    </div>
+  </form>
+</section>
+{% endblock %}
