@@ -1,5 +1,5 @@
 from .message import Message
 from .peer_registry import PeerRegistry, InMemoryRegistry
-from .gossip_node import GossipNode
+from .broadcast_node import BroadcastNode
 
-__all__ = ["Message", "PeerRegistry", "InMemoryRegistry", "GossipNode"]
+__all__ = ["Message", "PeerRegistry", "InMemoryRegistry", "BroadcastNode"]
