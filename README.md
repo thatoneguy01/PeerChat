@@ -10,11 +10,13 @@ This module implements the **Discovery and Message Distribution** component of t
 
 When a node sends a message:
 1. It assigns the message a UUID and delivers it locally.
-2. It sends the message to **every peer** in the discovery registry concurrently over WebSockets.
-3. Each receiving peer sends back an **ACK** confirming receipt.
-4. If no ACK arrives within 2 seconds, the sender **retries up to 3 times** before giving up.
-5. Each peer that receives a new message checks the UUID — if already seen, it is silently dropped. If new, it is delivered locally and forwarded to all of that peer's known peers (with the same ACK + retry).
-6. UUID deduplication ensures every node processes each message **exactly once** regardless of how many paths it arrives through.
+2. It increments its own entry in its **vector clock** and attaches the full vector to the message.
+3. It sends the message to **every peer** in the discovery registry concurrently over WebSockets.
+4. Each receiving peer sends back an **ACK** confirming receipt.
+5. If no ACK arrives within 2 seconds, the sender **retries up to 3 times** before giving up.
+6. Each peer that receives a new message checks the UUID. If already seen, it is silently dropped. If new, the peer checks **causal readiness** before delivery.
+7. If the message is causally ready (all messages that causally precede it have already been delivered), it is delivered via `on_message` and forwarded to peers. If not, it is held in a **hold-back queue** until its causal predecessors arrive.
+8. UUID deduplication ensures every node processes each message **exactly once** regardless of how many paths it arrives through. Causal ordering ensures every node delivers messages in an order consistent with their cause-and-effect relationships.
 
 ---
 
@@ -26,8 +28,14 @@ When a node sends a message:
 │   ├── __init__.py          # Package exports
 │   ├── message.py           # Message dataclass + JSON serialization
 │   ├── peer_registry.py     # PeerRegistry interface + InMemoryRegistry
-│   └── broadcast_node.py       # BroadcastNode — WebSocket server + broadcast + ACK/retry
-├── demo.py                  # Runnable 3-node demo
+│   ├── broadcast_node.py    # BroadcastNode — WebSocket server + broadcast + ACK/retry
+│   └── vector_clock.py      # VectorClock + HoldBackQueue — causal ordering
+├── docs/
+│   └── vector_clock.md      # Design doc for causal ordering implementation
+├── tests/
+│   ├── test_vector_clock.py         # Unit tests for vector clock and causal ordering
+│   └── test_dedup_loop_prevention.py
+├── demo.py                  # Runnable demo: broadcast + causal ordering scenarios
 └── requirements.txt         # Python dependencies
 ```
 
@@ -114,6 +122,7 @@ python3.11 demo.py
 | `timestamp` | `float` | No | `time.time()` | Unix timestamp of when the message was created. |
 | `signature` | `str` | No | `""` | Hash/signature filled by the **Security team** before calling `broadcast()`. |
 | `ttl` | `int` | No | `10` | Max number of forward hops before propagation stops. |
+| `vector_clock` | `dict` | No | `{}` | Logical timestamp attached by `BroadcastNode` at send time. Do not set manually. |
 
 **Expected output of `Message.to_json()`**
 ```json
@@ -123,7 +132,8 @@ python3.11 demo.py
   "id": "7355eaeb-...",
   "timestamp": 1747058342.71,
   "signature": "",
-  "ttl": 9
+  "ttl": 9,
+  "vector_clock": {"127.0.0.1:5001": 3, "127.0.0.1:5002": 1}
 }
 ```
 
@@ -219,8 +229,8 @@ When a peer comes back online after missing messages, your team is responsible f
 | Peer is slow / temporarily unreachable | Retried up to 3 times with backoff |
 | Peer is offline for the entire broadcast | Not delivered — Recovery/Storage team replays on reconnect |
 
-**What this module guarantees:** every currently-online peer processes each message ID at most once.
-**What it does not guarantee:** delivery to peers that are offline. That is handled by the Recovery & Storage team via message backlog replay.
+**What this module guarantees:** every currently-online peer processes each message ID at most once, and `on_message` fires in causal order — if message A causally precedes message B (the sender of B had observed A before sending B), every peer delivers A before B.
+**What it does not guarantee:** delivery to peers that are offline, or a total order among causally unrelated concurrent messages. Offline delivery is handled by the Recovery & Storage team via message backlog replay.
 
 ---
 
@@ -236,3 +246,6 @@ When a peer comes back online after missing messages, your team is responsible f
 | Atomic `deduplicate()` | Check-and-mark in a single lock acquisition — prevents race conditions under concurrent delivery. |
 | `PeerRegistry` interface | Decouples distribution from discovery — swap implementations with no changes to broadcast logic. |
 | `asyncio` event loop per node | WebSocket server runs on a background thread; `broadcast()` stays callable from sync code. |
+| Vector clocks for causal ordering | Wall-clock timestamps cannot establish causality across machines with drifting clocks. Vector clocks assign a logical timestamp that encodes which messages a sender had observed, enabling receivers to detect and buffer out-of-order deliveries. |
+| Hold-back queue | Messages whose causal predecessors have not yet arrived are buffered rather than delivered immediately. When a predecessor is delivered, the queue is drained iteratively so that cascading dependencies resolve in a single pass. |
+| Causal ordering only (not total ordering) | Total ordering requires a central coordinator, which is incompatible with the peer-to-peer design. Causal ordering is the strongest guarantee achievable without a coordinator and is sufficient for chat: users only require that replies appear after the messages they reply to. |
