@@ -19,6 +19,7 @@ class Message:
     timestamp: float = field(default_factory=time.time)
     signature: str = ""                             # set by security team
     ttl: int = 10                                   # decremented at each gossip hop
+    vector_clock: dict = field(default_factory=dict)  # set by GossipNode on send
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
