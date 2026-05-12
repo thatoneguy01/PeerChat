@@ -1,5 +1,6 @@
 from .message import Message
 from .peer_registry import PeerRegistry, InMemoryRegistry
 from .broadcast_node import BroadcastNode
+from .membership_router import MembershipRouter
 
-__all__ = ["Message", "PeerRegistry", "InMemoryRegistry", "BroadcastNode"]
+__all__ = ["Message", "PeerRegistry", "InMemoryRegistry", "BroadcastNode", "MembershipRouter"]
