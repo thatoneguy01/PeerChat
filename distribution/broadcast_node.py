@@ -32,6 +32,7 @@ import websockets
 
 from .message import Message
 from .peer_registry import PeerRegistry
+from .vector_clock import VectorClock, HoldBackQueue
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,9 @@ class BroadcastNode:
         self._seen_lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop_event: Optional[asyncio.Event] = None
+
+        self._vc = VectorClock()
+        self._hold_back = HoldBackQueue()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -134,8 +138,16 @@ class BroadcastNode:
         if not self.deduplicate(message.id):
             return                              # already seen — stop the cascade
 
-        if self.on_message:
-            self.on_message(message)
+        if self._vc.is_ready(message):
+            self._vc.merge(message.vector_clock)
+            to_deliver = [message] + self._hold_back.drain(self._vc)
+        else:
+            self._hold_back.add(message)
+            to_deliver = []
+
+        for msg in to_deliver:
+            if self.on_message:
+                self.on_message(msg)
 
         if message.ttl > 0:
             message.ttl -= 1
@@ -145,6 +157,8 @@ class BroadcastNode:
 
     async def _do_broadcast(self, message: Message) -> None:
         """Originate a broadcast from this node."""
+        self._vc.increment(self.address)
+        message.vector_clock = self._vc.snapshot()
         self.deduplicate(message.id)
         if self.on_message:
             self.on_message(message)
