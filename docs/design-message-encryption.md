@@ -15,11 +15,24 @@
 
 This document specifies **payload confidentiality** and **integrity/authenticity of ciphertext** for PeerChat’s distributed messages. Encryption is implemented as a **pure, testable library layer** that sits **below** message signing and **above** the raw transport bytes managed by discovery and distribution.
 
-The chosen baseline is **symmetric authenticated encryption** using **AES-256-GCM** with a **group key** established out-of-band (room password or pre-shared key file). This matches the course constraint of **deferring complex asymmetric PKI** while still delivering a credible, implementable design with clear upgrade paths.
+The chosen baseline is **symmetric authenticated encryption** using **AES-256-GCM** with a **group key** established out-of-band (shared network password or pre-shared key file). This matches the course constraint of **deferring complex asymmetric PKI** while still delivering a credible, implementable design with clear upgrade paths. That choice aligns especially well with **one room, broadcast-only** traffic: a single ciphertext can be read by every legitimate member who holds the same key.
 
 ---
 
 ## 2. Problem statement
+
+### 2.0 PeerChat product model (normative)
+
+The following constraints apply to the whole system and drive how encryption integrates with other components:
+
+| Assumption | Description |
+|------------|-------------|
+| **Single global room** | There is exactly **one** logical chat room for the entire PeerChat deployment. There are no separate per-user or per-team rooms in v1. |
+| **Decentralized control** | **No central service** is the authoritative owner of message content or of “who may communicate.” Peers relay, store, and verify cooperatively. Encryption assumes ciphertext may pass through **any** peer’s distribution/history path without trusting that peer with plaintext. |
+| **Invite-only join** | A new node **cannot** self-attach to the network arbitrarily. Joining requires an **invitation** from a member already in the mesh. Discovery and admission logic are expected to enforce this; cryptography does not replace it, but **key delivery** (how the invitee learns the group key or password) should be specified jointly with the discovery/admission design (e.g. out-of-band link, in-person password, or encrypted invite payload in a later revision). |
+| **Broadcast-only chat** | User-visible chat messages are **broadcast to every member** of the room. There is **no** separate v1 product requirement for pairwise (1:1) encrypted DMs; the encryption envelope is designed for **one payload, many recipients**. |
+
+**Encryption implications:** a **shared group key** is appropriate; there is no per-recipient ciphertext variant for chat content. **AAD** still uses a logical `room_id` field for **versioning and domain separation** (see §6.3); for this product it is **fixed to `0`** unless the project later forks into multiple rooms.
 
 ### 2.1 Motivation
 
@@ -46,7 +59,7 @@ In a peer-to-peer chat network, messages traverse **untrusted networks** and may
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                         UI Layer                             │
-│  (room password, errors, lock indicators, paste handling)   │
+│  (network password, errors, lock indicators, paste handling) │
 └─────────────────────────────┬───────────────────────────────┘
                               │
 ┌─────────────────────────────▼───────────────────────────────┐
@@ -97,7 +110,7 @@ In a peer-to-peer chat network, messages traverse **untrusted networks** and may
 
 1. **Confidentiality:** ciphertext must not reveal plaintext to parties without the active group key (under standard assumptions for AES-GCM).
 2. **Integrity of ciphertext:** any modification of ciphertext (accidental or malicious) must fail decryption / verification with high probability.
-3. **Context binding:** optional **associated authenticated data (AAD)** binds ciphertext to stable routing/metadata fields to mitigate **context confusion** attacks (same ciphertext pasted into another conversation).
+3. **Context binding:** **associated authenticated data (AAD)** binds ciphertext to stable metadata to mitigate **context confusion** (e.g. accidental replay across a **different build**, testnet, or a hypothetical future multi-room fork). With **one global room**, AAD is not about “which room” in product terms; it anchors the blob to **PeerChat v1 semantics** and **envelope version**.
 4. **Interoperability:** a **versioned**, **documented** on-wire format so distribution and cache teams can treat payloads as opaque byte strings with a small header.
 5. **Testability:** deterministic test vectors and property tests for round-trips, failure modes, and nonce misuse guards.
 
@@ -107,6 +120,7 @@ In a peer-to-peer chat network, messages traverse **untrusted networks** and may
 2. **Per-message sender anonymity** at the cryptographic layer.
 3. **Hiding traffic patterns** (message sizes, timing); that requires padding/traffic shaping and is out of scope.
 4. **Replacing** the signatures team’s responsibilities; encryption does not prove authorship.
+5. **Pairwise (1:1) chat** as a first-class product mode; v1 is **broadcast-only** (see §2.0).
 
 ---
 
@@ -121,6 +135,7 @@ In a peer-to-peer chat network, messages traverse **untrusted networks** and may
 | **Active network attacker**  | Drop, delay, replay, modify packets                                    | MITM on local segment      |
 | **Malicious peer**           | Participates in protocol; may log traffic; may send malformed messages | Compromised classmate node |
 | **Honest but curious peer**  | Follows protocol; tries to read others’ past messages if keys leak     | Shared laptop              |
+| **Uninvited outsider**       | Not on the membership graph; may still see encrypted traffic if physically on the same LAN | Should not obtain plaintext without the group key; **must not** be able to self-join without an invite (admission is a **discovery/control-plane** requirement, not solved by AES alone) |
 
 
 ### 5.2 Security properties (intended)
@@ -175,15 +190,13 @@ In a peer-to-peer chat network, messages traverse **untrusted networks** and may
 
 ### 6.3 Associated authenticated data (AAD)
 
-GCM can authenticate additional bytes **without encrypting them**. Use AAD to bind ciphertext to:
+GCM can authenticate additional bytes **without encrypting them**. Use AAD to bind ciphertext to stable, agreed metadata.
 
-- `room_id` (or network id)
-- `message_schema_version`
-- Optional: `sender_id` **if** it is stable before encryption and visible on the wire in plaintext
+**PeerChat v1 (single room):** the product has **one** logical room. The AAD field **`room_id` is reserved and MUST be `0`** for all v1 messages. It remains in the layout so that **wire parsers and tests stay stable** if the class ever adds rooms later; it also gives a cheap constant for sanity checks.
 
-**Decision:** Minimum AAD = UTF-8 encoding of `"peerchat\0"` + **big-endian uint32** `room_id` + **big-endian uint32** `envelope_version`. Extend only with cross-team agreement.
+**Decision:** Minimum AAD = UTF-8 encoding of `"peerchat\0"` + **big-endian uint32** `room_id` (always **0** in v1) + **big-endian uint32** `envelope_version`. Optional: `sender_id` **if** stable before encryption and visible on the wire in plaintext—only with cross-team agreement.
 
-**Why:** Prevents trivial **context-switching** where a ciphertext blob is replayed into another room if the transport is compromised in a way that swaps routing fields.
+**Why:** With a single room, “wrong room” is not the main threat; AAD still binds the ciphertext to **this application’s message format** and **envelope version**, reducing ambiguity if blobs are ever reused across **different software versions** or **misconfigured clients**.
 
 ### 6.4 Canonical plaintext encoding
 
@@ -254,7 +267,9 @@ Two standard patterns:
 **Signed material (minimum):**  
 `sign_bytes = SHA-256( crypto_envelope_binary || canonical_distribution_fields )`
 
-Where `canonical_distribution_fields` is a **stable, documented byte concatenation** of fields the distribution layer considers authoritative (e.g. `message_id`, `room_id`, `sender_id`, `timestamp_unix_ms`). The signatures team may use **raw signing** over `sign_bytes` or sign a human-readable structure; what matters is **everyone hashes the same canonical bytes**.
+Where `canonical_distribution_fields` is a **stable, documented byte concatenation** of fields the distribution layer considers authoritative (e.g. `message_id`, `sender_id`, `timestamp_unix_ms`). For v1, **`room_id` in that bundle SHOULD be omitted or fixed to `0`** since there is only one room—pick one convention and document it in the distribution/signatures joint spec.
+
+**Broadcast note:** every member verifies the **same** signature over the **same** envelope bytes; there is no per-recipient ciphertext branch for chat content.
 
 **Rationale:** EtS ties the signature to what actually traverses the network, reducing ambiguity if routing metadata changes between layers.
 
@@ -264,19 +279,29 @@ Where `canonical_distribution_fields` is a **stable, documented byte concatenati
 - Signing module accepts **opaque bytes** + returns signature fields.
 - Verification order on receive: **verify signature** on the agreed `sign_bytes` **before** decrypt **only if** signature covers ciphertext; if the team signs plaintext only, order changes—**must not mix**; EtS + hash as above is the recommended default.
 
-### 8.2 Peer discovery
+### 8.2 Peer discovery and invite-only admission
 
-**Coupling:** **Loose**. Discovery provides `room_id`, peer list, and possibly **out-of-band key hints** (e.g. “this room uses Argon2 with these public params”—should be rare).
+**Product coupling:** **Medium**. Discovery maintains **who is a member** of the single room and how to reach them. **Invite-only join** means admission is **not** open enrollment: a new peer should only appear after an **existing member** authorizes them. Encryption does not implement invites, but **group key delivery** must align with whatever the discovery/admission flow is (password shared when inviting, QR code, side channel, etc.).
+
+**Coupling to crypto:** **Loose** for algorithms; **tight** for product security. Discovery may expose:
+
+- **Member list** (or partial view) so distribution can **broadcast** to all live peers.
+- Optional **non-secret** hints, e.g. current **`key_id`** epoch or Argon2 parameters used for password stretching (still avoid leaking secrets).
 
 **Requirements:**
 
-- Discovery responses MUST NOT embed the **raw group key** in cleartext on the wire unless the course explicitly accepts that for demos; prefer **never** sending keys on discovery channels.
+- Discovery and gossip payloads MUST NOT embed the **raw group key** in cleartext on the wire unless the course explicitly accepts that for demos; prefer **never** sending keys on discovery channels—use the **invite / out-of-band** path for key material instead.
 
-**Optional extension:** advertise `**key_id`** of the current epoch so late joiners know they are stale.
+**Optional extension:** advertise **`key_id`** of the current epoch so late joiners know they are stale.
 
-### 8.3 Message distribution
+### 8.3 Message distribution (broadcast)
 
 **Coupling:** **Tight** for framing, **loose** for crypto internals.
+
+PeerChat sends **one logical message** to **all current members**. Distribution therefore:
+
+- Uses the **same** encrypted envelope for every recipient (no per-peer ciphertext variants for chat content).
+- Relies on discovery (or cached membership) for the **fan-out target set**.
 
 **Distribution responsibilities:**
 
@@ -304,10 +329,11 @@ Where `canonical_distribution_fields` is a **stable, documented byte concatenati
 
 **Functional requirements:**
 
-1. **Room join:** prompt for **room password** or import **PSK file** (demo).
+1. **Joining the network:** combine **invite acceptance** (product flow owned with discovery) with **key entry**: prompt for the **shared network password** or import **PSK file** (demo), unless the invite channel already delivered a derived key securely.
 2. **Error states:** distinguish **bad password / wrong key**, **tampered message**, **unsupported version**, **missing key for key_id**.
 3. **No key echo:** use password fields; clear sensitive buffers where practical (Python limits apply).
 4. **Optional:** display **key epoch** (`key_id`) for power users debugging rotation.
+5. **Broadcast UX:** no recipient picker for v1 chat; optional “sending to **N** peers” indicator driven by membership count from discovery.
 
 **Non-requirements:** branding, themes, animations.
 
@@ -321,7 +347,7 @@ Where `canonical_distribution_fields` is a **stable, documented byte concatenati
 | Mode              | Description                                    | Security notes                            |
 | ----------------- | ---------------------------------------------- | ----------------------------------------- |
 | **PSK file**      | 32-byte random key in a file excluded from git | Good for demos; poor UX                   |
-| **Room password** | User string → Argon2id → 32-byte key           | UX-friendly; strength depends on password |
+| **Network password** | Shared secret string for the **only** room → Argon2id → 32-byte key | UX-friendly; strength depends on password; same secret for all invited members |
 
 
 ### 9.2 Key storage (local)
@@ -400,14 +426,14 @@ def encrypt_message(
     *,
     key: bytes,
     key_id: int,
-    room_id: int,
+    room_id: int,  # PeerChat v1: pass 0 (single global room); reserved for future use
     plaintext: bytes,
 ) -> bytes: ...  # returns full crypto envelope binary
 
 def decrypt_message(
     *,
     keyring: Mapping[int, bytes],  # key_id -> key
-    room_id: int,
+    room_id: int,  # PeerChat v1: pass 0; must match AAD used at encrypt time
     envelope: bytes,
 ) -> bytes: ...  # returns plaintext or raises
 
@@ -440,7 +466,7 @@ class UnsupportedEnvelopeVersionError(CryptoError): ...
 
 | Error                             | User-visible message (UI)                                                | Log / metrics              |
 | --------------------------------- | ------------------------------------------------------------------------ | -------------------------- |
-| `DecryptFailedError`              | “Message couldn’t be verified. It may be corrupted or for another room.” | Count; no payload logging  |
+| `DecryptFailedError`              | “Message couldn’t be verified. It may be corrupted or encrypted with a different key.” | Count; no payload logging  |
 | `UnknownSuiteError`               | “This message uses unsupported encryption.”                              | Include `cipher_suite` int |
 | `UnsupportedEnvelopeVersionError` | “Update your client.”                                                    | Include version byte       |
 
@@ -470,7 +496,7 @@ class UnsupportedEnvelopeVersionError(CryptoError): ...
 - Round-trip: random plaintext sizes ∈ {0, 1, 1024, max-1}.
 - Wrong key: decrypt fails with `DecryptFailedError`.
 - Tamper: flip one bit in ciphertext or tag; must fail.
-- Wrong `room_id` in AAD vs decrypt call: should fail if AAD is enforced correctly.
+- **Mismatched AAD:** encrypt with `room_id=0` but decrypt with a different `room_id` passed into the API: must fail if AAD is enforced correctly (guards coding mistakes even though v1 is always `0`).
 - **Golden vectors:** fixed key/nonce/ plaintext → known ciphertext+tag (checked into test data).
 
 ### 14.2 Property tests (Hypothesis optional)
@@ -496,7 +522,7 @@ class UnsupportedEnvelopeVersionError(CryptoError): ...
 
 1. **Phase 0:** merge library with **no-op** mode behind feature flag (optional).
 2. **Phase 1:** encrypt **new** messages only; history shows “legacy cleartext” if any (may be none in greenfield).
-3. **Phase 2:** UI password; persist salt locally with room id.
+3. **Phase 2:** UI password; persist salt locally (scoped by install or invite id if multiple networks are tested on one machine).
 4. **Phase 3:** optional key rotation / `key_id` support.
 
 ---
@@ -505,9 +531,9 @@ class UnsupportedEnvelopeVersionError(CryptoError): ...
 
 1. **Exact canonical bytes** for signature hashing (field order, endianness, UTF-8 normalization).
 2. **Default wire format:** binary vs base64 JSON for the whole project.
-3. **Room identity:** is `room_id` a stable integer, UUID string, or hash?
+3. **Invite + key flow:** how the inviter conveys **password / PSK / salt** to the invitee without a central server (this is the main residual product-security question for symmetric crypto).
 4. **Attachment policy:** encrypt file bytes inline vs separate blob store with same envelope.
-5. **Leader / operator model** for automated key rotation (if any).
+5. **Leader / operator model** for automated key rotation (if any)—harder in a purely decentralized design; manual rotation may be the v1 default.
 
 ---
 
@@ -524,7 +550,7 @@ class UnsupportedEnvelopeVersionError(CryptoError): ...
 
 1. UI collects user message `m`.
 2. App forms `plaintext = canonical_encode(m)`.
-3. `envelope = encrypt_message(key=group_key, key_id=current, room_id=R, plaintext=plaintext)`.
+3. `envelope = encrypt_message(key=group_key, key_id=current, room_id=0, plaintext=plaintext)` (v1 single room).
 4. `sig_fields = signatures.sign(hash(envelope || dist_canonical))`.
 5. Distribution publishes `{envelope, sig_fields, dist_canonical_fields}`.
 
@@ -532,7 +558,7 @@ class UnsupportedEnvelopeVersionError(CryptoError): ...
 
 1. Distribution delivers message record.
 2. Signatures verifies using agreed `sign_bytes`.
-3. `plaintext = decrypt_message(keyring=keys, room_id=R, envelope=envelope)`.
+3. `plaintext = decrypt_message(keyring=keys, room_id=0, envelope=envelope)`.
 4. App decodes plaintext; UI renders.
 
 ---
