@@ -8,9 +8,9 @@
 
 ## 1. The Problem
 
-The existing gossip protocol (`GossipNode`) reliably delivers every message to every peer exactly once. What it does **not** guarantee is the *order* in which those messages are delivered.
+The existing broadcast protocol (`BroadcastNode`) reliably delivers every message to every peer exactly once. What it does **not** guarantee is the *order* in which those messages are delivered.
 
-Because gossip propagates through randomly chosen relay paths, two messages sent in quick succession, say, Alice replies to Bob, may arrive at a third peer with Alice's reply showing up *before* Bob's original message. The chat log becomes causally incoherent: a reply appears before the message it responds to.
+Because messages travel over independent WebSocket connections, two messages sent in quick succession, say, Alice replies to Bob, may arrive at a third peer with Alice's reply showing up *before* Bob's original message. The chat log becomes causally incoherent: a reply appears before the message it responds to.
 
 Wall-clock timestamps (`Message.timestamp`) cannot fix this. Clocks on different machines drift; there is no global clock in a P2P network.
 
@@ -77,22 +77,22 @@ No other changes to `message.py`.
 A standalone module, no dependencies on gossip internals, responsible for:
 
 - **`VectorClock` class**: wraps a `dict[str, int]`, provides `increment(node_id)`, `merge(other)` (element-wise max), and `is_ready(msg, local_vc)` (the readiness check from Section 4).
-- **`HoldBackQueue` class**: thread-safe buffer of messages waiting on missing predecessors. Exposes `add(msg)` and `drain(local_vc) -> list[Message]` (returns all messages that became ready after a delivery).
+- **`HoldBackQueue` class**: buffer of messages waiting on missing predecessors. Exposes `add(msg)` and `drain(local_vc) -> list[Message]` (returns all messages that became ready after a delivery). No internal locking needed; all causal state is accessed from within `BroadcastNode`'s asyncio event loop, which is single-threaded.
 
-Keeping this in its own module makes it independently testable without spinning up TCP sockets.
+Keeping this in its own module makes it independently testable without spinning up WebSocket servers.
 
-### 5.3 `distribution/gossip_node.py`: integrate causal layer
+### 5.3 `distribution/broadcast_node.py`: integrate causal layer
 
-`GossipNode` owns a `VectorClock` and a `HoldBackQueue`. The touch points are:
+`BroadcastNode` owns a `VectorClock` and a `HoldBackQueue`. The touch points are:
 
-**`broadcast(message)`**: before marking the message seen and forwarding, increment the local VC entry for `self.address` and write the resulting vector into `message.vector_clock`.
+**`_do_broadcast(message)`**: increments the local VC entry for `self.address` and writes the resulting vector into `message.vector_clock` before delivering locally and forwarding to peers. This is the async coroutine scheduled by the public `broadcast()` method.
 
-**`_receive(message)`**: after deduplication, instead of calling `on_message` directly:
-1. Check `HoldBackQueue.is_ready(message, local_vc)`.
-2. If ready: deliver (`on_message`), merge incoming VC into local VC, then call `drain()` to check whether any buffered messages are now ready (delivering them in order).
+**`_receive(message)`**: after deduplication via `deduplicate()`, instead of calling `on_message` directly:
+1. Check `VectorClock.is_ready(message)`.
+2. If ready: merge incoming VC into local VC, deliver (`on_message`), then call `drain()` to check whether any buffered messages are now ready (delivering them in order).
 3. If not ready: add to `HoldBackQueue`.
 
-The existing deduplication logic (`_seen` set) is unchanged — it runs first, before the causal check, so the hold-back queue never accumulates duplicates.
+The existing deduplication logic (`deduplicate()`) is unchanged and still runs first, so the hold-back queue never accumulates duplicates. Forwarding to peers via `_forward()` always happens regardless of causal readiness, so other peers receive the message and can make their own causal decision.
 
 The public API (`start`, `stop`, `broadcast`, `on_message`) is unchanged. Other teams do not need to modify their integration code.
 
@@ -111,7 +111,7 @@ The public API (`start`, `stop`, `broadcast`, `on_message`) is unchanged. Other 
 
 ## 7. Known Limitations
 
-**Hold-back queue can grow unboundedly** if a predecessor message is permanently lost (e.g., the sender crashes before re-transmitting). A real production system would add a timeout that falls back to delivery-in-arrival-order after waiting too long. For this project, the TTL-based gossip and deduplication make permanent message loss unlikely in a local demo, so this is an acceptable simplification.
+**Hold-back queue can grow unboundedly** if a predecessor message is permanently lost (e.g., the sender crashes before all retries are exhausted). A real production system would add a timeout that falls back to delivery-in-arrival-order after waiting too long. For this project, `BroadcastNode`'s ACK/retry mechanism (up to 3 attempts per peer) makes permanent message loss unlikely in a local demo, so this is an acceptable simplification.
 
 **New nodes start with a zeroed clock.** A node joining mid-conversation has `VC[k] = 0` for all `k`. Messages addressed to it will pass the readiness check immediately, meaning it may receive causally ordered messages for the ongoing conversation but will not see older history. That is the Recovery & Storage team's responsibility (log replay).
 
@@ -128,7 +128,7 @@ Three nodes: A (`:5001`), B (`:5002`), C (`:5003`). All clocks start at `{5001:0
 | 1 | A sends M1 | `{5001:1, 5002:0, 5003:0}` | (none) | (none) |
 | 2 | B receives M1, delivers | `{5001:1, …}` | `{5001:1, 5002:0, 5003:0}` | (none) |
 | 3 | B sends M2 (reply to M1) | (none) | `{5001:1, 5002:1, 5003:0}` | (none) |
-| 4 | C receives M2 first (gossip path was faster) | (none) | (none) | holds M2 in queue |
+| 4 | C receives M2 first (arrived via a faster network path) | (none) | (none) | holds M2 in queue |
 | 5 | C receives M1, delivers | (none) | (none) | `{5001:1, 5002:0, 5003:0}` |
 | 6 | C drains queue: M2 now ready, delivers | (none) | (none) | `{5001:1, 5002:1, 5003:0}` |
 
