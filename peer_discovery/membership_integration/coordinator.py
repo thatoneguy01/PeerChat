@@ -76,6 +76,13 @@ class MembershipCoordinator:
         current = self._snapshot.get_member(user_id)
         if not current or current.state in (MemberState.LEFT, MemberState.DISCONNECTED):
             return
+            
+        if current.state != MemberState.LEAVING:
+            req_event = self._log.append(
+                EventType.LEAVE_REQUESTED, user_id, source="coordinator", term=1, display_name=current.display_name
+            )
+            self._snapshot.apply_event(req_event)
+            
         event = self._log.append(
             EventType.LEAVE_CONFIRMED, user_id, source="coordinator", term=1, display_name=current.display_name
         )
