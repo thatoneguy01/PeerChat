@@ -1,15 +1,27 @@
 {% extends "base.html" %}
 
-{% block title %}PeerChat UI{% endblock %}
+{% block title %}Peer Chat{% endblock %}
 
 {% block content %}
 <section class="chat-card">
   <header class="chat-header">
     <div>
       <p class="eyebrow">PeerChat</p>
-      <h1>Chat interface skeleton</h1>
+      <h1>
+        {% if selected_user %}
+          Chat with {{ selected_user }}
+        {% else %}
+          Chat interface skeleton
+        {% endif %}
+      </h1>
     </div>
-    <p class="subtitle">Flask, Jinja2, and HTMX wired for incremental chat updates.</p>
+    <p class="subtitle">
+      {% if selected_user %}
+        You entered this room by selecting a user from the list.
+      {% else %}
+        Flask, Jinja2, and HTMX wired for incremental chat updates.
+      {% endif %}
+    </p>
   </header>
 
   <section id="message-stream" class="message-stream" aria-live="polite">
