@@ -2,7 +2,7 @@
 
 **SJSU CS275 Enterprise Applications | Final Project**
 
-This module implements the **Discovery and Message Distribution** component of the class's peer-to-peer distributed chat system. It broadcasts messages to all peers over WebSockets with guaranteed delivery via ACK and retry.
+This module implements the **Discovery and Message Distribution** component of the class's peer-to-peer distributed chat system. It broadcasts messages to peers over WebSockets using ACK and retry for currently reachable peers.
 
 ---
 
@@ -97,7 +97,7 @@ python3.11 demo.py
 | Peer ACKs successfully | Delivery confirmed. No retry needed. |
 | Peer does not ACK within 2s | Sender retries. Attempts 1 → 2 → 3 with 0.5s, 1.0s, 1.5s delays between each. |
 | All 3 retries fail | Warning is logged. That peer is marked as unreachable for this message. Recovery/Storage team handles replay when the peer returns. |
-| Duplicate message arrives | Silently dropped — `on_message` is NOT called again, no ACK sent back. |
+| Duplicate message arrives | ACK is still sent so the sender stops retrying, but `on_message` is NOT called again and the message is NOT forwarded again. |
 | Peer is offline at broadcast time | All retries fail; warning logged. Other peers are unaffected. |
 
 ---
@@ -181,6 +181,9 @@ msg = Message(content="Hello!", sender=node.address)
 msg.signature = your_hash_function(msg)
 node.broadcast(msg)
 ```
+Do not include `ttl` in a long-lived content signature. TTL is transport metadata
+and changes at each forwarding hop. Sign stable fields such as message id, sender,
+timestamp, and payload, or coordinate a separate hop-by-hop signature if needed.
 
 ### Discovery Team
 Subclass `PeerRegistry` and implement `get_peers()`:
@@ -208,7 +211,7 @@ When a peer comes back online after missing messages, your team is responsible f
 
 ---
 
-## Delivery Guarantee
+## Delivery Behavior
 
 | Scenario | Outcome |
 |----------|---------|
@@ -216,7 +219,7 @@ When a peer comes back online after missing messages, your team is responsible f
 | Peer is slow / temporarily unreachable | Retried up to 3 times with backoff |
 | Peer is offline for the entire broadcast | Not delivered — Recovery/Storage team replays on reconnect |
 
-**What this module guarantees:** every currently-online peer receives each message exactly once.
+**What this module guarantees:** every currently-online peer processes each message ID at most once.
 **What it does not guarantee:** delivery to peers that are offline. That is handled by the Recovery & Storage team via message backlog replay.
 
 ---
