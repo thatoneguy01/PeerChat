@@ -131,6 +131,46 @@ h1 {
   gap: 12px;
 }
 
+.users-card {
+  gap: 18px;
+}
+
+.user-list {
+  display: grid;
+  gap: 12px;
+}
+
+.user-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(29, 27, 24, 0.08);
+  text-decoration: none;
+  color: inherit;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.user-row:hover {
+  transform: translateY(-1px);
+  border-color: rgba(22, 93, 82, 0.35);
+  box-shadow: 0 6px 18px rgba(22, 93, 82, 0.12);
+}
+
+.user-name {
+  margin: 0;
+  font-weight: 600;
+}
+
+.user-status {
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 textarea {
   width: 100%;
   padding: 16px 18px;
