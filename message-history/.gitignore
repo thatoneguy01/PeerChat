@@ -1,0 +1,24 @@
+# Runtime message storage
+logs/
+index/
+snapshots/
+
+# Recovery transfer temp files
+tmp/
+*.partial
+*.chunk
+
+# Local databases, if used later
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
