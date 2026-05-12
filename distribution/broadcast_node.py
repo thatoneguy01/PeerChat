@@ -1,13 +1,13 @@
 """
-Guaranteed message distribution node — WebSocket transport.
+Message distribution node — WebSocket transport.
 
 Each node:
   1. Runs a WebSocket server to receive incoming messages.
   2. Deduplicates messages by UUID so each is delivered exactly once.
   3. On a new message: fires on_message callback, then forwards to ALL peers
-     with ACK + retry to guarantee delivery.
+     with ACK + retry for currently reachable peers.
 
-Guaranteed delivery mechanism:
+Delivery mechanism:
   - Sender forwards to every peer (not a random sample).
   - Receiver sends back {"ack": msg_id} after processing.
   - If no ACK within ACK_TIMEOUT seconds, sender retries up to MAX_RETRIES times.
@@ -26,9 +26,13 @@ import asyncio
 import json
 import threading
 import logging
+from dataclasses import replace
 from typing import Callable, List, Optional, Set, Tuple
 
-import websockets
+try:
+    import websockets
+except ModuleNotFoundError:
+    websockets = None
 
 from .message import Message
 from .peer_registry import PeerRegistry
@@ -66,6 +70,8 @@ class BroadcastNode:
 
     def start(self) -> None:
         """Start the WebSocket server in a background thread."""
+        if websockets is None:
+            raise RuntimeError("websockets is required; install with: pip install -r requirements.txt")
         self._loop = asyncio.new_event_loop()
         threading.Thread(target=self._run_loop, daemon=True).start()
         logger.info("BroadcastNode starting on ws://%s:%d", self.host, self.port)
@@ -110,6 +116,8 @@ class BroadcastNode:
         self._loop.run_until_complete(self._serve())
 
     async def _serve(self) -> None:
+        if websockets is None:
+            raise RuntimeError("websockets is required; install with: pip install -r requirements.txt")
         self._stop_event = asyncio.Event()
         async with websockets.serve(self._handle_ws, self.host, self.port):
             logger.info("BroadcastNode listening on ws://%s:%d", self.host, self.port)
@@ -124,31 +132,39 @@ class BroadcastNode:
                 message = Message.from_json(raw)
                 await self._receive(message)
                 await websocket.send(json.dumps({"ack": message.id}))
-        except websockets.ConnectionClosed:
-            pass
         except Exception as exc:
+            if websockets is not None and isinstance(exc, websockets.ConnectionClosed):
+                return
             logger.debug("Error handling peer connection: %s", exc)
 
-    async def _receive(self, message: Message) -> None:
-        """Process a message arriving from another peer."""
+    async def _receive(self, message: Message) -> bool:
+        """Process a message arriving from another peer.
+
+        Returns True when this node processed the message for the first time.
+        Returns False for duplicates.
+        """
         if not self.deduplicate(message.id):
-            return                              # already seen — stop the cascade
+            return False                        # already seen — stop the cascade
 
         if self.on_message:
             self.on_message(message)
 
         if message.ttl > 0:
-            message.ttl -= 1
-            await self._forward(message)
+            await self._forward(replace(message, ttl=message.ttl - 1))
+
+        return True
 
     # ── Broadcast logic ───────────────────────────────────────────────────────
 
-    async def _do_broadcast(self, message: Message) -> None:
+    async def _do_broadcast(self, message: Message) -> bool:
         """Originate a broadcast from this node."""
-        self.deduplicate(message.id)
+        if not self.deduplicate(message.id):
+            return False
         if self.on_message:
             self.on_message(message)
-        await self._forward(message)
+        if message.ttl > 0:
+            await self._forward(message)
+        return True
 
     async def _forward(self, message: Message) -> None:
         """Send to ALL peers concurrently, each with ACK + retry."""
@@ -161,6 +177,8 @@ class BroadcastNode:
         Retries up to MAX_RETRIES times if no ACK is received within ACK_TIMEOUT.
         """
         uri = f"ws://{host}:{port}"
+        if websockets is None:
+            raise RuntimeError("websockets is required; install with: pip install -r requirements.txt")
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 async with websockets.connect(uri, open_timeout=2, close_timeout=2) as ws:
