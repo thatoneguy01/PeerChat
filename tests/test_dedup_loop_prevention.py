@@ -106,3 +106,42 @@ def test_start_fails_fast_when_websockets_is_missing(monkeypatch):
 
     with pytest.raises(RuntimeError, match="websockets is required"):
         node.start()
+
+
+def test_direct_send_targets_one_peer_and_forces_ttl_zero():
+    node = make_node()
+    sent = []
+
+    async def fake_send(host, port, message):
+        sent.append((host, port, message))
+
+    node._send_with_retry = fake_send
+    msg = Message(content="history chunk", sender=node.address, id="history-1", ttl=5)
+
+    run(node._send_to_peer("127.0.0.1", 5003, msg))
+
+    assert len(sent) == 1
+    assert sent[0][0:2] == ("127.0.0.1", 5003)
+    assert sent[0][2].ttl == 0
+    assert msg.ttl == 5
+
+
+def test_direct_send_does_not_use_broadcast_forwarding():
+    node = make_node()
+    forwarded = []
+    sent = []
+
+    async def fake_forward(message):
+        forwarded.append(message)
+
+    async def fake_send(host, port, message):
+        sent.append((host, port, message))
+
+    node._forward = fake_forward
+    node._send_with_retry = fake_send
+    msg = Message(content="private replay", sender=node.address, id="history-2", ttl=10)
+
+    run(node._send_to_peer("127.0.0.1", 5002, msg))
+
+    assert forwarded == []
+    assert len(sent) == 1

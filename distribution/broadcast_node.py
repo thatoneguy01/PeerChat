@@ -19,6 +19,7 @@ Public API
     node.on_message = lambda msg: ...   # called once per unique message
     node.start()
     node.broadcast(message)             # called by UI / upper layer
+    node.send_to_peer(host, port, message)  # direct one-peer send for recovery
     node.stop()
 """
 
@@ -92,6 +93,19 @@ class BroadcastNode:
         """
         if self._loop:
             asyncio.run_coroutine_threadsafe(self._do_broadcast(message), self._loop)
+
+    def send_to_peer(self, host: str, port: int, message: Message) -> None:
+        """
+        Send a message to exactly one peer.
+
+        This is intended for History/Recovery replay chunks. The message is sent
+        with ttl=0 so the receiver can process it locally without re-broadcasting
+        the chunk to the rest of the network.
+        """
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._send_to_peer(host, port, message), self._loop
+            )
 
     def deduplicate(self, msg_id: str) -> bool:
         """
@@ -179,6 +193,11 @@ class BroadcastNode:
         if message.ttl > 0:
             await self._forward(message)
         return True
+
+    async def _send_to_peer(self, host: str, port: int, message: Message) -> None:
+        """Send to one peer without fanout."""
+        direct_message = replace(message, ttl=0)
+        await self._send_with_retry(host, port, direct_message)
 
     async def _forward(self, message: Message) -> None:
         """Send to ALL peers concurrently, each with ACK + retry."""
