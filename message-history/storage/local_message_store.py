@@ -2,7 +2,7 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterable, List, Optional
 
 from .models import Message
 
@@ -124,6 +124,37 @@ class LocalMessageStore:
 
             return True
 
+    def save_many(self, messages: Iterable[Message]) -> Dict[str, int]:
+        """
+        Persist a batch of messages, such as one received recovery chunk.
+
+        Duplicate messages are treated as successful no-ops so callers can
+        safely retry chunks after a lost ACK.
+        """
+        result = {
+            "saved": 0,
+            "duplicates": 0,
+            "invalid": 0,
+        }
+
+        for msg in messages:
+            if not isinstance(msg, Message):
+                result["invalid"] += 1
+                continue
+
+            try:
+                was_saved = self.save(msg)
+            except (AttributeError, TypeError, ValueError):
+                result["invalid"] += 1
+                continue
+
+            if was_saved:
+                result["saved"] += 1
+            else:
+                result["duplicates"] += 1
+
+        return result
+
     def has_message(self, message_id: str) -> bool:
         """Return True if this message ID is already stored locally."""
         with self._lock:
@@ -191,6 +222,93 @@ class LocalMessageStore:
                 continue
 
         return messages
+
+    def get_missing_since(self, have_vector_clock: Dict[str, int]) -> List[Message]:
+        """
+        Return messages this store has that a peer is missing.
+
+        `have_vector_clock` is the peer's recovery cursor. A message is missing
+        when its sender sequence is greater than the peer's known sequence for
+        that sender. Returned messages preserve active-log order.
+        """
+        have_vector_clock = have_vector_clock or {}
+
+        with self._lock:
+            offsets: List[int] = []
+
+            for sender, seq_map in self._sender_seq.items():
+                peer_seq = self._safe_int(have_vector_clock.get(sender, 0))
+
+                for seq_key, offset in seq_map.items():
+                    sender_seq = self._safe_int(seq_key)
+                    if sender_seq > peer_seq:
+                        offsets.append(int(offset))
+
+            messages: List[Message] = []
+            for offset in sorted(set(offsets)):
+                msg = self._read_message_at_offset(offset)
+                if msg is not None:
+                    messages.append(msg)
+
+            return messages
+
+    def build_history_chunks(
+        self,
+        have_vector_clock: Dict[str, int],
+        transfer_id: str,
+        chunk_size: int = 100,
+    ) -> List[Dict]:
+        """
+        Build serializable history chunks for direct peer-to-peer recovery.
+
+        """
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than 0")
+
+        missing = self.get_missing_since(have_vector_clock)
+        chunks: List[Dict] = []
+
+        for start in range(0, len(missing), chunk_size):
+            chunk_messages = missing[start:start + chunk_size]
+            chunks.append(
+                {
+                    "type": "history_chunk",
+                    "transfer_id": transfer_id,
+                    "chunk_id": len(chunks) + 1,
+                    "is_snapshot": False,
+                    "is_last": start + chunk_size >= len(missing),
+                    "messages": [
+                        json.loads(msg.to_json())
+                        for msg in chunk_messages
+                    ],
+                }
+            )
+
+        return chunks
+
+    def _read_message_at_offset(self, offset: int) -> Optional[Message]:
+        """Read one message from active.log.jsonl by byte offset."""
+        try:
+            with ACTIVE_LOG.open("r", encoding="utf-8") as f:
+                f.seek(offset)
+                line = f.readline().strip()
+        except (OSError, ValueError):
+            return None
+
+        if not line:
+            return None
+
+        try:
+            return Message.from_json(line)
+        except (KeyError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+
+    def _safe_int(self, value) -> int:
+        """Convert recovery cursor values to int, defaulting bad data to 0."""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
 
     # ── Read: vector clock for recovery ───────────────────────────────────────
 
