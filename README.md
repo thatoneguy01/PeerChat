@@ -1,42 +1,59 @@
 # P2P Chat — Message Distribution Module
 
-**SJSU CS275 Enterprise Applications | Final Project**
+**SJSU CMPE 275 Enterprise Applications | Final Project**
 
-This module implements the **Discovery and Message Distribution** component of the class's peer-to-peer distributed chat system. It broadcasts messages to peers over WebSockets using ACK and retry for currently reachable peers.
+This module implements the **Message Distribution** component of the class's peer-to-peer distributed chat system. Messages are propagated to every reachable peer over WebSockets with ACK + retry, de-duplicated by UUID, and delivered in **causal order** using vector clocks.
 
 ---
 
 ## How It Works
 
 When a node sends a message:
-1. It assigns the message a UUID and delivers it locally.
-2. It increments its own entry in its **vector clock** and attaches the full vector to the message.
-3. It sends the message to **every peer** in the discovery registry concurrently over WebSockets.
-4. Each receiving peer sends back an **ACK** confirming receipt.
-5. If no ACK arrives within 2 seconds, the sender **retries up to 3 times** before giving up.
-6. Each peer that receives a new message checks the UUID. If already seen, it is silently dropped. If new, the peer checks **causal readiness** before delivery.
-7. If the message is causally ready (all messages that causally precede it have already been delivered), it is delivered via `on_message` and forwarded to peers. If not, it is held in a **hold-back queue** until its causal predecessors arrive.
-8. UUID deduplication ensures every node processes each message **exactly once** regardless of how many paths it arrives through. Causal ordering ensures every node delivers messages in an order consistent with their cause-and-effect relationships.
+
+1. It assigns the message a UUID and increments its own entry in its **vector clock**, then attaches the full vector to the message.
+2. It delivers the message locally (fires `on_message`).
+3. It sends the message to **every peer** returned by the peer registry, concurrently, over WebSockets.
+4. Each receiving peer sends back an **ACK**.
+5. If no ACK arrives within 2 seconds, the sender **retries up to 3 times** (0.5 s, 1.0 s, 1.5 s backoff).
+
+When a node receives a message:
+
+1. Atomic dedup check — if the UUID has been seen, the message is dropped.
+2. Causal-readiness check against the local vector clock.
+   - **Ready** → deliver via `on_message`, merge the incoming vector clock, then drain the hold-back queue for any cascading deliveries.
+   - **Not ready** → buffer in the hold-back queue until predecessors arrive.
+3. If `ttl > 0`, forward to all peers (excluding self and the original sender) with ACK + retry.
+
+The combination guarantees **exactly-once delivery per online peer**, in **causal order**, with no routing loops.
 
 ---
 
 ## Project Structure
 
 ```
-275-Final Project/
+PeerChat/
 ├── distribution/
-│   ├── __init__.py          # Package exports
-│   ├── message.py           # Message dataclass + JSON serialization
-│   ├── peer_registry.py     # PeerRegistry interface + InMemoryRegistry
-│   ├── broadcast_node.py    # BroadcastNode — WebSocket server + broadcast + ACK/retry
-│   └── vector_clock.py      # VectorClock + HoldBackQueue — causal ordering
+│   ├── __init__.py             # Package exports
+│   ├── message.py              # Message dataclass + JSON serialization
+│   ├── peer_registry.py        # PeerRegistry interface + InMemoryRegistry
+│   ├── broadcast_node.py       # BroadcastNode — WebSocket server + ACK/retry + dedup + VC
+│   ├── vector_clock.py         # VectorClock + HoldBackQueue — causal ordering
+│   ├── membership_router.py    # PeerRegistry wired to Peer Discovery's MembershipService
+│   └── gossip_node.py          # Legacy TCP gossip implementation (unused)
 ├── docs/
-│   └── vector_clock.md      # Design doc for causal ordering implementation
+│   ├── PRD.md                       # Team plan + assignments
+│   ├── INTEGRATION.md               # One-page guide for the other teams
+│   ├── vector_clock.md              # Vector clock design doc
+│   ├── contract_peer_discovery.md   # Peer Discovery integration contract
+│   ├── contract_security.md         # Security integration contract
+│   └── contract_history.md          # History / Recovery & Storage contract
 ├── tests/
-│   ├── test_vector_clock.py         # Unit tests for vector clock and causal ordering
-│   └── test_dedup_loop_prevention.py
-├── demo.py                  # Runnable demo: broadcast + causal ordering scenarios
-└── requirements.txt         # Python dependencies
+│   ├── test_dedup_loop_prevention.py   # Dedup + TTL unit tests
+│   ├── test_vector_clock.py            # VectorClock + HoldBackQueue unit tests
+│   ├── test_integration.py             # End-to-end integration test
+│   └── stubs/                          # Fakes for Security, History used by E2E test
+├── demo.py                   # Runnable 10-node demo + causal ordering scenarios
+└── requirements.txt
 ```
 
 ---
@@ -46,206 +63,169 @@ When a node sends a message:
 **Requirements:** Python 3.11+
 
 ```bash
-python3.11 -m pip install websockets
+pip install -r requirements.txt
 ```
+
+(`websockets>=10.0` is the only runtime dependency.)
 
 ---
 
 ## Quick Start
 
 ```bash
-python3.11 demo.py
+python3 demo.py
 ```
 
 **What the demo does:**
-- Starts 3 nodes on ports 5001, 5002, and 5003 on localhost
-- Node 5001 broadcasts one message to all peers
-- Every node receives, ACKs, and prints it exactly once
-
-**Expected output:**
-```
-[Node :5001] SENT: 'Hello from Node 1!'
-
-[Node :5001] received: 'Hello from Node 1!'  (id=7355eaeb)
-[Node :5002] received: 'Hello from Node 1!'  (id=7355eaeb)
-[Node :5003] received: 'Hello from Node 1!'  (id=7355eaeb)
-
-[Demo complete — each node should have received the message once]
-```
+1. Starts 10 broadcast nodes on ports 5001–5010.
+2. Node 5001 broadcasts one message. Every other node receives, ACKs, and prints it.
+3. Runs 4 causal-ordering scenarios proving out-of-order messages are buffered and released in causal order.
 
 ---
 
-## Inputs and Expected Outputs
+## Running the Tests
+
+```bash
+pytest tests/ -v
+```
+
+Three suites:
+
+| Suite | What it covers |
+|---|---|
+| `test_dedup_loop_prevention.py` | Atomic dedup, TTL=0 non-forward, TTL decrement, `ttl`-copy safety, local duplicate broadcast, fast-fail when `websockets` is missing |
+| `test_vector_clock.py` | VectorClock ops, HoldBackQueue drain + cascade, BroadcastNode causal send/receive, JSON round-trip with `vector_clock` |
+| `test_integration.py` | End-to-end: signed message reaches every peer once, unsigned messages dropped, dedup across double-broadcast, multi-listener fan-out |
+
+---
+
+## Public API
 
 ### `BroadcastNode`
 
-**Inputs (constructor)**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `host` | `str` | Yes | IP address this node listens on. e.g. `"127.0.0.1"` |
-| `port` | `int` | Yes | Port this node's WebSocket server binds to. e.g. `5001` |
-| `peer_registry` | `PeerRegistry` | Yes | Peer list from the Discovery team. Must implement `get_peers()`. |
-
-**Inputs (methods)**
-
-| Method / Property | Input | Description |
-|-------------------|-------|-------------|
-| `start()` | None | Starts the WebSocket server. Call before `broadcast()`. |
-| `stop()` | None | Shuts down the WebSocket server. |
-| `broadcast(message)` | A `Message` object | Sends the message to all peers with ACK + retry. Called by the UI team. |
-| `on_message` | A function `(Message) -> None` | Callback set by UI/storage team. Fired once per unique received message. |
-| `deduplicate(msg_id)` | A message UUID string | Returns `True` if new (and marks seen), `False` if already seen. |
-
-**Expected outputs**
-
-| Action | Expected behaviour |
-|--------|-------------------|
-| `node.broadcast(msg)` | `on_message` fires on this node immediately. All peers receive the message and ACK back. Each peer's `on_message` fires exactly once. |
-| Peer ACKs successfully | Delivery confirmed. No retry needed. |
-| Peer does not ACK within 2s | Sender retries. Attempts 1 → 2 → 3 with 0.5s, 1.0s, 1.5s delays between each. |
-| All 3 retries fail | Warning is logged. That peer is marked as unreachable for this message. Recovery/Storage team handles replay when the peer returns. |
-| Duplicate message arrives | ACK is still sent so the sender stops retrying, but `on_message` is NOT called again and the message is NOT forwarded again. |
-| Peer is offline at broadcast time | All retries fail; warning logged. Other peers are unaffected. |
-
----
-
-### `Message`
-
-**Inputs (constructor)**
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `content` | `str` | Yes | — | The chat message text typed by the user. |
-| `sender` | `str` | Yes | — | `"host:port"` of the originating node. e.g. `"127.0.0.1:5001"` |
-| `id` | `str` | No | Auto UUID | Unique message ID used for deduplication. Do not set manually. |
-| `timestamp` | `float` | No | `time.time()` | Unix timestamp of when the message was created. |
-| `signature` | `str` | No | `""` | Hash/signature filled by the **Security team** before calling `broadcast()`. |
-| `ttl` | `int` | No | `10` | Max number of forward hops before propagation stops. |
-| `vector_clock` | `dict` | No | `{}` | Logical timestamp attached by `BroadcastNode` at send time. Do not set manually. |
-
-**Expected output of `Message.to_json()`**
-```json
-{
-  "content": "Hello!",
-  "sender": "127.0.0.1:5001",
-  "id": "7355eaeb-...",
-  "timestamp": 1747058342.71,
-  "signature": "",
-  "ttl": 9,
-  "vector_clock": {"127.0.0.1:5001": 3, "127.0.0.1:5002": 1}
-}
-```
-
----
-
-### `PeerRegistry` (Discovery team's interface)
-
-**Input to `BroadcastNode`:** any object that implements:
-
-```python
-def get_peers(self) -> list[tuple[str, int]]:
-    ...
-```
-
-**Expected output of `get_peers()`:** a list of `(host, port)` tuples of all known peers.
-
-```python
-[("127.0.0.1", 5001), ("127.0.0.1", 5002), ("127.0.0.1", 5003)]
-```
-
-For testing, use the built-in `InMemoryRegistry`:
-```python
-from distribution import InMemoryRegistry
-
-registry = InMemoryRegistry()
-registry.add_peer("127.0.0.1", 5001)
-registry.add_peer("127.0.0.1", 5002)
-```
-
----
-
-## Integration Guide for Other Teams
-
-### UI Team
 ```python
 from distribution import BroadcastNode, Message
 
-# 1. Get registry from Discovery team, create node
-node = BroadcastNode("127.0.0.1", 5000, discovery_registry)
-
-# 2. Set callback to display incoming messages
-node.on_message = lambda msg: display_in_chat(msg.content, msg.sender, msg.timestamp)
-
-# 3. Start the node
+node = BroadcastNode(host="127.0.0.1", port=5000, peer_registry=registry)
+node.on_message = lambda msg: print(f"got: {msg.content}")
 node.start()
 
-# 4. When user hits send:
-node.broadcast(Message(content=user_input, sender=node.address))
+node.broadcast(Message(content="hello", sender=node.address))
+
+node.stop()
 ```
 
-### Security Team
-Fill `Message.signature` before the message reaches `broadcast()`:
-```python
-msg = Message(content="Hello!", sender=node.address)
-msg.signature = your_hash_function(msg)
-node.broadcast(msg)
-```
-Do not include `ttl` in a long-lived content signature. TTL is transport metadata
-and changes at each forwarding hop. Sign stable fields such as message id, sender,
-timestamp, and payload, or coordinate a separate hop-by-hop signature if needed.
+| Method / Property | Purpose |
+|---|---|
+| `start()` | Start the WebSocket server in a background thread. |
+| `stop()` | Shut down the WebSocket server. |
+| `broadcast(msg)` | Originate a message into the network. |
+| `on_message` | Callback `(Message) -> None` fired once per unique delivered message, in causal order. |
+| `deduplicate(msg_id)` | Atomic check-and-mark. Returns `True` for a new id, `False` for a duplicate. |
 
-### Discovery Team
-Subclass `PeerRegistry` and implement `get_peers()`:
-```python
-from distribution import PeerRegistry
+### `Message`
 
-class YourRegistry(PeerRegistry):
-    def get_peers(self) -> list[tuple[str, int]]:
-        # return your live peer list here
-        ...
-```
-Pass an instance to `BroadcastNode(host, port, YourRegistry())`.
+| Field | Type | Filled by | Notes |
+|---|---|---|---|
+| `content` | `str` | Originator (UI) | — |
+| `sender` | `str` | Originator | `"host:port"` |
+| `id` | `str` | Auto | UUID — used for dedup |
+| `timestamp` | `float` | Auto | `time.time()` |
+| `signature` | `str` | **Security team** | Fill before `broadcast()` |
+| `ttl` | `int` | Default 10 | Decremented per hop — **do not sign** |
+| `vector_clock` | `dict` | **BroadcastNode** | Filled automatically on send — **do not sign** |
 
-### Recovery & Storage Team
-Hook into `on_message` to log every message for backlog/replay:
+### `PeerRegistry` (Peer Discovery integration)
+
+Two implementations ship in the module:
+
+- **`InMemoryRegistry`** — hard-coded `(host, port)` list. For demos and tests.
+- **`MembershipRouter`** — drop-in `PeerRegistry` wired to the Peer Discovery team's `MembershipService`. Tracks ACTIVE vs. BACKFILLING vs. SUSPECTED peers and updates in real time via a subscription.
+
 ```python
-node.on_message = lambda msg: storage.append(msg)
+from distribution import MembershipRouter
+router = MembershipRouter(service=peer_discovery_service, self_address="127.0.0.1:5001")
+node = BroadcastNode("127.0.0.1", 5001, router)
 ```
-Use `node.deduplicate(msg.id)` to gate your own processing if needed:
-```python
-if node.deduplicate(msg.id):
-    storage.append(msg)
-```
-When a peer comes back online after missing messages, your team is responsible for replaying the backlog to that node — our module logs a warning for every peer that exhausted all retries, which you can use as a signal.
 
 ---
 
-## Delivery Behavior
+## Integration with Other Teams
 
-| Scenario | Outcome |
-|----------|---------|
-| Peer is online and reachable | Guaranteed — ACK confirms receipt |
-| Peer is slow / temporarily unreachable | Retried up to 3 times with backoff |
-| Peer is offline for the entire broadcast | Not delivered — Recovery/Storage team replays on reconnect |
+Short version below. Full contracts live in `docs/`.
 
-**What this module guarantees:** every currently-online peer processes each message ID at most once, and `on_message` fires in causal order — if message A causally precedes message B (the sender of B had observed A before sending B), every peer delivers A before B.
-**What it does not guarantee:** delivery to peers that are offline, or a total order among causally unrelated concurrent messages. Offline delivery is handled by the Recovery & Storage team via message backlog replay.
+### UI team
+
+```python
+node = BroadcastNode("127.0.0.1", 5000, registry)
+node.on_message = lambda msg: display_in_chat(msg.content, msg.sender, msg.timestamp)
+node.start()
+
+# on user send:
+msg = Message(content=user_text, sender=node.address)
+msg = security.sign(msg)
+node.broadcast(msg)
+```
+
+### Security team — `docs/contract_security.md`
+
+Ship `sign(msg) → msg` and `verify(msg) → bool`. Sign the stable fields (`id`, `sender`, `timestamp`, `content`, with `signature=""` for canonicalization). **Do not sign `ttl` or `vector_clock`** — both are mutated in transit (TTL per hop; vector_clock is filled by `broadcast()` after signing).
+
+### Peer Discovery team — `docs/contract_peer_discovery.md`
+
+Already wired via `MembershipRouter`. Confirm the event-name schema (`JOIN_ACCEPTED`, `HISTORY_BACKFILL_COMPLETE`, `DISCONNECT_SUSPECTED`, `RECONNECTED`, `LEAVE_CONFIRMED`, `DISCONNECT_TIMEOUT`) is final.
+
+### History / Recovery & Storage team — `docs/contract_history.md`
+
+Register a listener on `on_message` for logging. Replay backlog to newly-joined peers **directly**, not via `broadcast()` (otherwise gossip re-delivers old messages to everyone).
+
+---
+
+## Delivery Guarantees
+
+| Guarantee | Reality |
+|---|---|
+| Every online peer receives every message | Yes — ACK + 3 retries |
+| Exactly once per peer | Yes — atomic UUID dedup |
+| Causal order preserved | Yes — vector clocks + hold-back queue |
+| Offline peers receive on reconnect | **No** — History team's replay path |
+| Total order across concurrent messages | **No** — not a goal; concurrent messages have no defined cross-peer order |
 
 ---
 
 ## Design Decisions
 
 | Decision | Rationale |
-|----------|-----------|
-| Broadcast to all peers | Guarantees no peer is skipped by chance — unlike random gossip fanout. |
-| ACK + retry | Confirms each delivery; retries transient failures before giving up. |
-| Exponential-style backoff | Avoids hammering a temporarily slow peer — retries at 0.5s, 1.0s, 1.5s. |
-| WebSocket transport | Full-duplex — ACK travels back on the same connection without opening a second socket. |
-| UUID deduplication | Ensures each message is processed exactly once even when multiple forward paths converge on the same node. |
-| Atomic `deduplicate()` | Check-and-mark in a single lock acquisition — prevents race conditions under concurrent delivery. |
-| `PeerRegistry` interface | Decouples distribution from discovery — swap implementations with no changes to broadcast logic. |
-| `asyncio` event loop per node | WebSocket server runs on a background thread; `broadcast()` stays callable from sync code. |
-| Vector clocks for causal ordering | Wall-clock timestamps cannot establish causality across machines with drifting clocks. Vector clocks assign a logical timestamp that encodes which messages a sender had observed, enabling receivers to detect and buffer out-of-order deliveries. |
-| Hold-back queue | Messages whose causal predecessors have not yet arrived are buffered rather than delivered immediately. When a predecessor is delivered, the queue is drained iteratively so that cascading dependencies resolve in a single pass. |
-| Causal ordering only (not total ordering) | Total ordering requires a central coordinator, which is incompatible with the peer-to-peer design. Causal ordering is the strongest guarantee achievable without a coordinator and is sufficient for chat: users only require that replies appear after the messages they reply to. |
+|---|---|
+| Broadcast to all peers (not random fanout) | Guarantees no peer is skipped by chance. We accept the higher send cost in exchange for determinism. |
+| ACK + retry with exponential backoff | Confirms each delivery; retries transient failures; gives up after 3 attempts and logs a warning the History team can act on. |
+| WebSocket transport | Full-duplex — ACK travels back on the same connection. `asyncio` keeps the server non-blocking; a background thread bridges to sync callers. |
+| Atomic `deduplicate()` | Check-and-mark in a single lock acquisition prevents races when two forwards arrive concurrently. |
+| Vector clocks | Wall-clock timestamps can't establish causality; vector clocks do, with one integer per known sender. |
+| Hold-back queue | Buffers out-of-order messages until predecessors arrive; drain cascades so a single delivery can unblock many. |
+| Causal order, not total | Total ordering needs a coordinator, which contradicts the P2P design goal. Chat users only need replies to follow the messages they reply to. |
+| `PeerRegistry` interface | Decouples us from discovery. `InMemoryRegistry` for tests, `MembershipRouter` for production. |
+| MPI dropped as a transport | WebSockets + TCP sockets cover the P2P requirement; MPI assumes a static rank set at launch, which contradicts dynamic peer join/leave. |
+
+---
+
+## Known Limitations
+
+- **Seen-set grows without bound.** Fine for demo scale; production would bound by time window or LRU.
+- **Hold-back queue can stall** if a predecessor message is permanently lost. Acceptable here because gossip + retries make permanent loss unlikely at demo scale.
+- **Offline delivery is out of scope.** The History team replays to reconnected peers.
+- **No wire-level encryption.** The Security team signs; encryption is a stretch.
+- **`gossip_node.py` is legacy.** The original TCP gossip implementation is retained only for reference; `BroadcastNode` is the supported path.
+
+---
+
+## Team
+
+| Member | Contribution |
+|---|---|
+| Bhuvana (POC) | Integration contracts; end-to-end test; report; README; PR coordination |
+| Asha | Broadcast implementation; vector clock integration |
+| Anukrithi | De-duplication + loop prevention; unit tests |
+| Shamathmika | Vector clock design + implementation + unit tests |
+| Manasa | WebSocket transport |
+| Peer-integration teammate | `MembershipRouter` (alignment with Peer Discovery's `MembershipService`) |
