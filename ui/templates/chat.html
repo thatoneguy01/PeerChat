@@ -28,6 +28,7 @@
     hx-target="#message-stream"
     hx-swap="innerHTML"
   >
+    <input type="hidden" name="user" value="{{ selected_user }}" />
     <label class="sr-only" for="message">Message</label>
     <textarea id="message" name="message" rows="3" placeholder="Write a message..."></textarea>
     <div class="composer-actions">

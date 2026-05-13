@@ -29,18 +29,25 @@ def create_app() -> Flask:
         selected_user = request.args.get("user", "").strip()
         return render_template(
             "chat.html",
-            messages=chat_service.get_messages(),
+            messages=chat_service.get_messages(selected_user),
             selected_user=selected_user,
         )
 
     @app.post("/messages")
     def post_message() -> str:
         content = request.form.get("message", "").strip()
+        selected_user = request.form.get("user", "").strip()
 
         if not content:
-            return render_template("partials/message_list.html", messages=chat_service.get_messages())
+            return render_template(
+                "partials/message_list.html",
+                messages=chat_service.get_messages(selected_user),
+            )
 
-        chat_service.post_user_message(content)
-        return render_template("partials/message_list.html", messages=chat_service.get_messages())
+        chat_service.post_user_message(selected_user, content)
+        return render_template(
+            "partials/message_list.html",
+            messages=chat_service.get_messages(selected_user),
+        )
 
     return app

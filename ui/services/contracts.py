@@ -10,8 +10,8 @@ class ChatService(Protocol):
     def get_users(self) -> list[UserRecord]:
         ...
 
-    def get_messages(self) -> list[MessageRecord]:
+    def get_messages(self, selected_user: str) -> list[MessageRecord]:
         ...
 
-    def post_user_message(self, content: str) -> None:
+    def post_user_message(self, selected_user: str, content: str) -> None:
         ...
