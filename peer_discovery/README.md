@@ -173,7 +173,7 @@ Short version below. Full contracts and guides live in `docs/workstream_d_extern
 
 | Member | Contribution |
 |---|---|
-| Person A | Event Log and Snapshot functionality |
-| Person B | Durability, Idempotency, and core models |
-| Person C | Coordinator, Tracing, Notifier, and public Service Facade |
-| Person D | External Integration (Message Distribution, History, Security) |
+| Himanshu | Event Log and Snapshot functionality |
+| Ali (work pending) | Durability, Idempotency, and core models |
+| Abhishek | Coordinator, Tracing, Notifier, and public Service Facade |
+| Asim (work pending) | External Integration (Message Distribution, History, Security) |
