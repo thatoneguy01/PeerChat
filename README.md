@@ -38,8 +38,7 @@ PeerChat/
 │   ├── peer_registry.py        # PeerRegistry interface + InMemoryRegistry
 │   ├── broadcast_node.py       # BroadcastNode — WebSocket server + ACK/retry + dedup + VC
 │   ├── vector_clock.py         # VectorClock + HoldBackQueue — causal ordering
-│   ├── membership_router.py    # PeerRegistry wired to Peer Discovery's MembershipService
-│   └── gossip_node.py          # Legacy TCP gossip implementation (unused)
+│   └── membership_router.py    # PeerRegistry wired to Peer Discovery's MembershipService
 ├── docs/
 │   ├── PRD.md                       # Team plan + assignments
 │   ├── INTEGRATION.md               # One-page guide for the other teams
@@ -215,7 +214,6 @@ Register a listener on `on_message` for logging. Replay backlog to newly-joined 
 - **Hold-back queue can stall** if a predecessor message is permanently lost. Acceptable here because gossip + retries make permanent loss unlikely at demo scale.
 - **Offline delivery is out of scope.** The History team replays to reconnected peers.
 - **No wire-level encryption.** The Security team signs; encryption is a stretch.
-- **`gossip_node.py` is legacy.** The original TCP gossip implementation is retained only for reference; `BroadcastNode` is the supported path.
 
 ---
 

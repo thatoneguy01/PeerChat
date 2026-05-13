@@ -2,7 +2,7 @@
 Defines the PeerRegistry interface that the Discovery team must implement.
 
 The Discovery team should subclass PeerRegistry (or duck-type it) and pass an
-instance to GossipNode.  For local testing, InMemoryRegistry is provided here.
+instance to BroadcastNode.  For local testing, InMemoryRegistry is provided here.
 """
 
 from typing import List, Tuple
