@@ -187,3 +187,164 @@ class TestGetRecent:
 
         assert isinstance(messages[0], Message)
         assert messages[0].id == "msg-001"
+
+
+# ── Duplicate recovery ingestion ─────────────────────────────────────────────
+
+class TestSaveMany:
+
+    def test_save_many_saves_new_messages(self):
+        store = LocalMessageStore()
+
+        result = store.save_many([
+            make_message("msg-001", "hello", seq=1),
+            make_message("msg-002", "world", seq=2),
+        ])
+
+        assert result == {"saved": 2, "duplicates": 0, "invalid": 0}
+        assert [msg.id for msg in store.get_recent()] == ["msg-001", "msg-002"]
+
+    def test_save_many_skips_duplicates(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "hello", seq=1))
+
+        result = store.save_many([
+            make_message("msg-001", "hello again", seq=1),
+            make_message("msg-002", "world", seq=2),
+        ])
+
+        assert result == {"saved": 1, "duplicates": 1, "invalid": 0}
+        assert [msg.id for msg in store.get_recent()] == ["msg-001", "msg-002"]
+
+    def test_save_many_chunk_retry_is_idempotent(self):
+        store = LocalMessageStore()
+        chunk = [
+            make_message("msg-001", "hello", seq=1),
+            make_message("msg-002", "world", seq=2),
+        ]
+
+        first_result = store.save_many(chunk)
+        retry_result = store.save_many(chunk)
+
+        assert first_result == {"saved": 2, "duplicates": 0, "invalid": 0}
+        assert retry_result == {"saved": 0, "duplicates": 2, "invalid": 0}
+        assert len(store.get_recent()) == 2
+
+    def test_save_many_counts_invalid_items(self):
+        store = LocalMessageStore()
+
+        result = store.save_many([
+            make_message("msg-001", "hello", seq=1),
+            {"id": "not-a-message"},
+        ])
+
+        assert result == {"saved": 1, "duplicates": 0, "invalid": 1}
+
+
+# ── Catch-up by vector clock ─────────────────────────────────────────────────
+
+class TestGetMissingSince:
+
+    def test_empty_vector_clock_returns_all_messages(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "hello", seq=1))
+        store.save(make_message("msg-002", "world", seq=2))
+
+        messages = store.get_missing_since({})
+
+        assert [msg.id for msg in messages] == ["msg-001", "msg-002"]
+
+    def test_up_to_date_vector_clock_returns_no_messages(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "hello", seq=1))
+        store.save(make_message("msg-002", "world", seq=2))
+
+        messages = store.get_missing_since({"127.0.0.1:5001": 2})
+
+        assert messages == []
+
+    def test_partial_vector_clock_returns_only_missing_messages(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "one", seq=1))
+        store.save(make_message("msg-002", "two", seq=2))
+        store.save(make_message("msg-003", "three", seq=3))
+
+        messages = store.get_missing_since({"127.0.0.1:5001": 1})
+
+        assert [msg.id for msg in messages] == ["msg-002", "msg-003"]
+
+    def test_vector_clock_tracks_multiple_senders_independently(self):
+        store = LocalMessageStore()
+        store.save(make_message("a-001", "a1", sender="127.0.0.1:5001", seq=1))
+        store.save(make_message("b-001", "b1", sender="127.0.0.1:5002", seq=1))
+        store.save(make_message("a-002", "a2", sender="127.0.0.1:5001", seq=2))
+        store.save(make_message("b-002", "b2", sender="127.0.0.1:5002", seq=2))
+
+        messages = store.get_missing_since({
+            "127.0.0.1:5001": 1,
+            "127.0.0.1:5002": 0,
+        })
+
+        assert [msg.id for msg in messages] == ["b-001", "a-002", "b-002"]
+
+    def test_get_missing_since_preserves_log_order(self):
+        store = LocalMessageStore()
+        store.save(make_message("a-001", "a1", sender="127.0.0.1:5001", seq=1))
+        store.save(make_message("b-001", "b1", sender="127.0.0.1:5002", seq=1))
+        store.save(make_message("a-002", "a2", sender="127.0.0.1:5001", seq=2))
+
+        messages = store.get_missing_since({})
+
+        assert [msg.id for msg in messages] == ["a-001", "b-001", "a-002"]
+
+    def test_get_missing_since_handles_bad_cursor_values(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "hello", seq=1))
+
+        messages = store.get_missing_since({"127.0.0.1:5001": "not-int"})
+
+        assert [msg.id for msg in messages] == ["msg-001"]
+
+
+# ── History chunks ───────────────────────────────────────────────────────────
+
+class TestHistoryChunks:
+
+    def test_build_history_chunks_splits_missing_messages(self):
+        store = LocalMessageStore()
+        for i in range(5):
+            store.save(make_message(f"msg-{i + 1:03}", f"msg {i + 1}", seq=i + 1))
+
+        chunks = store.build_history_chunks(
+            have_vector_clock={"127.0.0.1:5001": 1},
+            transfer_id="recover-abc",
+            chunk_size=2,
+        )
+
+        assert len(chunks) == 2
+        assert chunks[0]["type"] == "history_chunk"
+        assert chunks[0]["transfer_id"] == "recover-abc"
+        assert chunks[0]["chunk_id"] == 1
+        assert chunks[0]["is_snapshot"] is False
+        assert chunks[0]["is_last"] is False
+        assert [msg["id"] for msg in chunks[0]["messages"]] == ["msg-002", "msg-003"]
+        assert chunks[1]["chunk_id"] == 2
+        assert chunks[1]["is_last"] is True
+        assert [msg["id"] for msg in chunks[1]["messages"]] == ["msg-004", "msg-005"]
+
+    def test_build_history_chunks_returns_empty_when_nothing_missing(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "hello", seq=1))
+
+        chunks = store.build_history_chunks(
+            have_vector_clock={"127.0.0.1:5001": 1},
+            transfer_id="recover-abc",
+        )
+
+        assert chunks == []
+
+    def test_build_history_chunks_rejects_invalid_chunk_size(self):
+        store = LocalMessageStore()
+
+        with pytest.raises(ValueError):
+            store.build_history_chunks({}, "recover-abc", chunk_size=0)

@@ -394,7 +394,66 @@ messages = store.get_recent(limit=100)
 
 # Get this node's vector clock for recovery requests
 vc = store.get_latest_vector_clock()
+
+# Save a recovered history chunk.
+# Duplicate IDs are skipped so chunk retries are safe.
+result = store.save_many(messages)
+# {"saved": 3, "duplicates": 1, "invalid": 0}
+
+# Find messages a returning peer is missing.
+missing = store.get_missing_since({
+    "127.0.0.1:5001": 120,
+    "127.0.0.1:5002": 98,
+})
+
+# Build serializable direct-send history chunks for that peer.
+chunks = store.build_history_chunks(
+    have_vector_clock={"127.0.0.1:5001": 120},
+    transfer_id="recover-abc",
+    chunk_size=100,
+)
 ```
+
+#### Duplicate Handling During Recovery
+
+Recovery receivers should call `save_many(messages)` for each received
+`history_chunk`. Internally, this reuses `save(msg)`, so duplicate detection is
+still based on `message.id` and all normal indexes stay consistent.
+
+This makes recovery chunk retries idempotent. If an ACK is lost and the same
+chunk arrives again, already stored messages are counted as `duplicates` and are
+not appended to `active.log.jsonl` a second time.
+
+#### Catching Up With Recent Messages
+
+Recovery providers should call `get_missing_since(have_vector_clock)` or
+`build_history_chunks(...)` when answering a `recover_request`.
+
+For each locally stored message, the store compares:
+
+```python
+sender_seq = msg.vector_clock.get(msg.sender, 0)
+peer_seq = have_vector_clock.get(msg.sender, 0)
+```
+
+The message is returned when `sender_seq > peer_seq`. Multiple senders are
+handled independently, and returned messages preserve active-log order.
+
+`build_history_chunks(...)` returns payloads shaped like:
+
+```json
+{
+  "type": "history_chunk",
+  "transfer_id": "recover-abc",
+  "chunk_id": 1,
+  "is_snapshot": false,
+  "is_last": true,
+  "messages": []
+}
+```
+
+These chunks are intended for direct peer-to-peer recovery transport, not
+`BroadcastNode.broadcast()`.
 
 ---
 
@@ -423,3 +482,6 @@ make clean
 | `get_recent(limit)`         | Membership backfill (sends history to new members) |
 | `get_latest_vector_clock()` | Recovery tasks 3+ (sent in `recover_request`)      |
 | `save(msg)`                 | Called by recovery receiver when replaying chunks  |
+| `save_many(messages)`       | Recovery receiver chunk ingestion and retry dedupe |
+| `get_missing_since(vc)`     | Recovery provider delta selection                  |
+| `build_history_chunks(...)` | Recovery provider chunked direct-send payloads     |
