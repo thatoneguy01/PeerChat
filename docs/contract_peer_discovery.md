@@ -31,9 +31,9 @@ service.subscribe_membership_events(callback, from_version=...)
 | State | Our behaviour |
 |---|---|
 | `ACTIVE` | Peer receives real-time broadcasts |
-| `BACKFILLING` | Peer is held (buffered); not sent broadcasts until backfill completes |
+| `JOINING` / `BACKFILLING` | Peer is held (buffered); not sent broadcasts until backfill completes |
 | `SUSPECTED` | Peer is held; resumes once `RECONNECTED` fires |
-| `DISCONNECTED` / `LEFT` / `LEAVING` | Peer is dropped from routing |
+| `DISCONNECTED` / `LEFT` / `LEAVING` | Peer is skipped on every `get_peers()` call |
 
 ## Events we subscribe to
 
@@ -54,7 +54,7 @@ If any of those event names are going to change before tomorrow, tell us — gre
 | Item | Expected behaviour |
 |---|---|
 | `user_id` format | `"host:port"` string (e.g., `"127.0.0.1:5001"`). We parse on `:` and take the last segment as port. If the format changes, we break. |
-| Snapshot consistency | `.members` is a dict of live members only; removed members are absent, not tombstoned. |
+| Snapshot members dict | May include tombstoned members in `LEFT` / `DISCONNECTED` / `LEAVING` states — we skip them on the initialization scan and never add them to routing. The router is responsible for filtering, not the snapshot. |
 | Event ordering | Events per `user_id` must be delivered in causal order (e.g., `JOIN_ACCEPTED` before `HISTORY_BACKFILL_COMPLETE`). Cross-user ordering doesn't matter. |
 | `from_version` correctness | Passing `from_version=snapshot.version` in `subscribe_membership_events` must not miss events between snapshot and subscription. |
 | Thread safety | Your callback may fire on your own thread; we lock internally, so concurrent callbacks are fine. |

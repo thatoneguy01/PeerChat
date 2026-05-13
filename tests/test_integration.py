@@ -132,5 +132,38 @@ def test_multiple_listeners_all_see_every_message():
         node.stop()
 
 
+def test_direct_send_reaches_only_target_peer():
+    """History replay can send one chunk to one peer without broadcast fanout."""
+    registry = InMemoryRegistry()
+    base_port = BASE_PORT + 40
+    for i in range(NODE_COUNT):
+        registry.add_peer("127.0.0.1", base_port + i)
+
+    nodes, inboxes = [], []
+    for i in range(NODE_COUNT):
+        node = BroadcastNode("127.0.0.1", base_port + i, registry)
+        inbox = []
+        node.on_message = inbox.append
+        node.start()
+        nodes.append(node)
+        inboxes.append(inbox)
+
+    time.sleep(SETTLE)
+
+    try:
+        msg = Message(content="history chunk", sender=nodes[0].address, ttl=10)
+        nodes[0].send_to_peer("127.0.0.1", base_port + 1, msg)
+        time.sleep(SETTLE + 0.5)
+
+        assert inboxes[0] == []
+        assert len(inboxes[1]) == 1
+        assert inboxes[1][0].content == "history chunk"
+        assert inboxes[1][0].ttl == 0
+        assert inboxes[2] == []
+        assert msg.ttl == 10
+    finally:
+        _teardown(nodes)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

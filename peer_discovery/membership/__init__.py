@@ -13,6 +13,7 @@ from .models import (
     SubscriptionHandle,
     ValidationResult,
 )
+from .presence import PresenceEntry, PresenceManager, PresenceState
 from .snapshot import MembershipSnapshot
 
 __all__ = [
@@ -28,6 +29,9 @@ __all__ = [
     "MembershipEventLog",
     "MembershipSnapshot",
     "MembershipSnapshotData",
+    "PresenceEntry",
+    "PresenceManager",
+    "PresenceState",
     "StaleTermError",
     "SubscriptionHandle",
     "ValidationResult",

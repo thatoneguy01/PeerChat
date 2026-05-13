@@ -19,6 +19,7 @@ node = BroadcastNode(host, port, peer_registry)
 node.on_message = lambda msg: handle(msg)   # register receive hook
 node.start()
 node.broadcast(Message(content="hi", sender=node.address))
+node.send_to_peer("127.0.0.1", 5004, replay_chunk_msg)
 node.stop()
 ```
 
@@ -47,7 +48,8 @@ node.stop()
 **Status:** Interface documented; implementation on your side. See [`contract_history.md`](contract_history.md).
 
 - You register a listener on `node.on_message` to log every delivered message (causal-ordered, dedup'd).
-- **Critical:** replay history to new peers **directly**, not via `node.broadcast()`, or messages re-gossip and bandwidth explodes.
+- **Critical:** replay history to new peers with `node.send_to_peer(host, port, msg)`, not `node.broadcast()`, or messages re-gossip and bandwidth explodes.
+- Direct sends reuse the same WebSocket ACK/retry path, but copy the message with `ttl=0` so the target receives the chunk and does not forward it to the room.
 - Coordinate with Peer Discovery on the "new peer needs backlog" signal — MD isn't in that path.
 - **Action needed:** confirm direct-replay rule + ownership of the listener fan-out shim.
 
@@ -92,6 +94,17 @@ UI: node.broadcast(msg)
     MD: msg.vector_clock = snapshot()
     MD: on_message(msg)  [local delivery]
     MD: forward to every peer with ACK+retry
+```
+
+### Direct history replay path
+```
+History: build replay chunk Message
+History: node.send_to_peer(target_host, target_port, msg)
+    MD: copy msg with ttl=0
+    MD: send only to that peer with ACK+retry
+Target MD: deduplicate(msg.id)
+Target MD: on_message(msg)
+Target MD: ttl == 0, so do not forward
 ```
 
 ### Receive path
