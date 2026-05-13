@@ -45,9 +45,11 @@ Normal live chat messages should still use:
 BroadcastNode.broadcast(message)
 ```
 
-History recovery should not use `broadcast()`, because recovery is a direct
-one-to-one transfer between two peers. Snapshot chunks and history chunks should
-not appear as normal chat messages in the UI.
+History recovery reuses the existing `BroadcastNode.broadcast()` transport
+because the distribution module currently does not expose direct peer sends.
+Each recovery payload carries a `target_user_id`, and non-target peers ignore
+the payload. Snapshot chunks and history chunks should not appear as normal chat
+messages in the UI.
 
 ## Local Message Log
 
@@ -244,6 +246,8 @@ Example history chunk:
 {
   "type": "history_chunk",
   "transfer_id": "recover-abc",
+  "target_user_id": "127.0.0.1:5004",
+  "source_user_id": "127.0.0.1:5001",
   "chunk_id": 5,
   "is_snapshot": false,
   "messages": [
@@ -452,8 +456,27 @@ handled independently, and returned messages preserve active-log order.
 }
 ```
 
-These chunks are intended for direct peer-to-peer recovery transport, not
-`BroadcastNode.broadcast()`.
+`HistoryChunkStreamer` wraps these chunks in distribution `Message` objects and
+streams them with `BroadcastNode.broadcast()`. Every peer may receive the
+transport message, but only the peer whose `self_user_id` matches
+`target_user_id` ingests the chunk.
+
+```python
+from storage import HistoryChunkStreamer
+
+streamer = HistoryChunkStreamer(
+    store=store,
+    broadcaster=node,
+    self_user_id=node.address,
+)
+
+streamer.stream_missing_history(
+    target_user_id="127.0.0.1:5004",
+    have_vector_clock={"127.0.0.1:5001": 120},
+    transfer_id="recover-abc",
+    chunk_size=100,
+)
+```
 
 ---
 
