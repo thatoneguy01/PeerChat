@@ -27,7 +27,7 @@ _ALLOWED_FROM_STATES: dict[EventType, set[MemberState] | None] = {
     EventType.LEAVE_CONFIRMED: {MemberState.LEAVING},
     EventType.HEARTBEAT: None,
     EventType.DISCONNECT_SUSPECTED: {MemberState.ACTIVE},
-    EventType.DISCONNECT_TIMEOUT: {MemberState.SUSPECTED},
+    EventType.DISCONNECT_TIMEOUT: {MemberState.SUSPECTED, MemberState.BACKFILLING},
     EventType.RECONNECTED: {MemberState.SUSPECTED},
 }
 
