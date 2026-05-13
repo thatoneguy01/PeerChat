@@ -22,6 +22,7 @@
   </section>
 
   <form
+    id="composer-form"
     class="composer"
     hx-post="{{ url_for('post_message') }}"
     hx-target="#message-stream"
@@ -35,4 +36,58 @@
     </div>
   </form>
 </section>
+
+<script>
+  (() => {
+    const composerForm = document.getElementById("composer-form");
+    const messageInput = document.getElementById("message");
+
+    if (!composerForm || !messageInput) {
+      return;
+    }
+
+    const isTypingTarget = (target) => {
+      if (!(target instanceof HTMLElement)) {
+        return false;
+      }
+
+      if (target.isContentEditable) {
+        return true;
+      }
+
+      return target.matches("input, textarea, select");
+    };
+
+    messageInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (!messageInput.value.trim()) {
+        return;
+      }
+
+      composerForm.requestSubmit();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+
+      if (event.key === "/" && !isTypingTarget(event.target)) {
+        event.preventDefault();
+        messageInput.focus();
+        messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        messageInput.value = "";
+      }
+    });
+  })();
+</script>
 {% endblock %}
