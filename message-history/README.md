@@ -80,6 +80,15 @@ Example:
 The log should preserve enough information to replay the message later exactly
 as it was originally received.
 
+```
+logs/
+  active.log.jsonl
+```
+
+> **Implemented in** `storage/local_message_store.py` — `save(msg)` appends each
+> message as a compact JSON line. Duplicate messages are dropped before writing
+> using `message_id.index`.
+
 ## Local Indexes
 
 The log is good for append performance, but indexes are needed for fast lookup.
@@ -111,6 +120,17 @@ Example:
 ```
 
 This latest vector clock becomes the node's recovery cursor.
+
+```
+index/
+  message_id.index
+  sender_seq.index
+  latest_vector_clock.json
+```
+
+> **Implemented in** `storage/local_message_store.py` — all three indexes are
+> loaded into memory on startup and flushed to disk after every `save()`. Writes
+> use `.tmp` + `os.replace()` to prevent corruption on crash.
 
 ## Snapshot
 
@@ -294,3 +314,112 @@ If the sender does not receive an ACK, it can retry the same chunk.
 - How long to keep old snapshots
 - Whether snapshot transfer should send compressed bytes or decoded messages
 - Whether recovery should run on the same WebSocket port or a separate recovery port
+
+## Tasks 1 & 2 — Local Message Storage and Log
+
+### What This Does
+
+Every node saves incoming chat messages locally so they can be replayed later
+to new or returning members. This covers two responsibilities:
+
+- **Task 1:** Saving each message to disk as it arrives
+- **Task 2:** Keeping a local log and indexes for fast lookup and recovery
+
+---
+
+### File Structure
+
+```
+storage/
+  __init__.py               # exports Message and LocalMessageStore
+  models.py                 # Message dataclass (reuses distribution team format)
+  local_message_store.py    # all storage logic
+
+logs/
+  active.log.jsonl          # append-only message log (one JSON line per message)
+
+index/
+  message_id.index          # JSON list of stored message IDs (duplicate detection)
+  sender_seq.index          # JSON map of sender → {seq → byte offset in log}
+  latest_vector_clock.json  # JSON map of sender → latest seq (recovery cursor)
+```
+
+> `logs/` and `index/` are created at runtime and ignored by git.
+
+---
+
+### How It Works
+
+When a message arrives via the `on_message` callback from message distribution:
+
+```
+1. Check message.id against message_id.index — duplicate? drop it.
+2. Append full Message as one JSON line to active.log.jsonl.
+3. Update message_id.index (add message.id).
+4. Update sender_seq.index (sender + seq → byte offset).
+5. Update latest_vector_clock.json (only if new seq > current stored seq).
+```
+
+All five steps run under a threading lock so concurrent messages stay consistent.
+Index writes use a `.tmp` file + `os.replace()` so a crash mid-write never
+corrupts an index file.
+
+---
+
+### Key Classes
+
+#### `Message` (`models.py`)
+
+Reuses the distribution team's message format exactly. Adds two helpers:
+
+- `to_json()` — compact JSON string for writing to the log
+- `from_json(line)` — deserializes a log line back to a Message, with safe
+  `.get()` defaults so older log lines don't break recovery
+- `sender_seq()` — returns `vector_clock.get(sender, 0)`
+
+#### `LocalMessageStore` (`local_message_store.py`)
+
+Main class. Instantiate once per node:
+
+```python
+from storage import LocalMessageStore
+
+store = LocalMessageStore()
+
+# Save an incoming message (returns True if saved, False if duplicate)
+store.save(msg)
+
+# Get recent messages for backfill
+messages = store.get_recent(limit=100)
+
+# Get this node's vector clock for recovery requests
+vc = store.get_latest_vector_clock()
+```
+
+---
+
+### Running Tests
+
+```bash
+# All tests
+make test
+
+# Storage tests only
+make test-local
+
+# Edge case tests only
+make test-edge
+
+# Clean logs, indexes, and cache
+make clean
+```
+
+---
+
+### What's Handed Off to Other Tasks
+
+| What                        | Where it goes                                      |
+| --------------------------- | -------------------------------------------------- |
+| `get_recent(limit)`         | Membership backfill (sends history to new members) |
+| `get_latest_vector_clock()` | Recovery tasks 3+ (sent in `recover_request`)      |
+| `save(msg)`                 | Called by recovery receiver when replaying chunks  |
