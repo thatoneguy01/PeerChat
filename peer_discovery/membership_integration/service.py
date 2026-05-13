@@ -43,3 +43,7 @@ class MembershipService:
 
     def register_join_validator(self, validator: Callable) -> None:
         self._coordinator.register_join_validator(validator)
+
+    def tick(self) -> None:
+        """Periodic maintenance: presence liveness and backfill timeouts."""
+        self._coordinator.tick()
