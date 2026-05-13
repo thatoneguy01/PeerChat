@@ -1,6 +1,6 @@
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Callable
 
@@ -120,11 +120,12 @@ class PresenceManager:
 
     def get_member_presence(self, user_id: str) -> PresenceEntry | None:
         with self._lock:
-            return self._members.get(user_id)
+            entry = self._members.get(user_id)
+            return replace(entry) if entry else None
 
     def get_all_entries(self) -> dict[str, PresenceEntry]:
         with self._lock:
-            return dict(self._members)
+            return {uid: replace(entry) for uid, entry in self._members.items()}
 
     @property
     def tracked_count(self) -> int:
