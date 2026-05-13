@@ -119,6 +119,7 @@ node.stop()
 | `start()` | Start the WebSocket server in a background thread. |
 | `stop()` | Shut down the WebSocket server. |
 | `broadcast(msg)` | Originate a message into the network. |
+| `send_to_peer(host, port, msg)` | Send one message to one peer only. Intended for History/Recovery replay chunks. |
 | `on_message` | Callback `(Message) -> None` fired once per unique delivered message, in causal order. |
 | `deduplicate(msg_id)` | Atomic check-and-mark. Returns `True` for a new id, `False` for a duplicate. |
 
@@ -176,7 +177,7 @@ Already wired via `MembershipRouter`. Confirm the event-name schema (`JOIN_ACCEP
 
 ### History / Recovery & Storage team — `docs/contract_history.md`
 
-Register a listener on `on_message` for logging. Replay backlog to newly-joined peers **directly**, not via `broadcast()` (otherwise gossip re-delivers old messages to everyone).
+Register a listener on `on_message` for logging. Replay backlog to newly-joined peers with `send_to_peer(host, port, msg)`, not `broadcast()` (otherwise recovery chunks are sent to every peer). Direct sends are copied with `ttl=0`, so the target receives the chunk but does not re-forward it.
 
 ---
 
@@ -197,6 +198,7 @@ Register a listener on `on_message` for logging. Replay backlog to newly-joined 
 | Decision | Rationale |
 |---|---|
 | Broadcast to all peers (not random fanout) | Guarantees no peer is skipped by chance. We accept the higher send cost in exchange for determinism. |
+| Direct send for history replay | Recovery chunks should go only to the catching-up peer, not to the whole room. |
 | ACK + retry with exponential backoff | Confirms each delivery; retries transient failures; gives up after 3 attempts and logs a warning the History team can act on. |
 | WebSocket transport | Full-duplex — ACK travels back on the same connection. `asyncio` keeps the server non-blocking; a background thread bridges to sync callers. |
 | Atomic `deduplicate()` | Check-and-mark in a single lock acquisition prevents races when two forwards arrive concurrently. |

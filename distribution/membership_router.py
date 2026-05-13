@@ -85,7 +85,7 @@ class MembershipRouter(PeerRegistry):
             if state_name == 'ACTIVE':
                 with self._lock:
                     self._active[user_id] = addr
-            elif state_name in ('BACKFILLING', 'SUSPECTED'):
+            elif state_name in ('JOINING', 'BACKFILLING', 'SUSPECTED'):
                 with self._lock:
                     self._hold.add(user_id)
             # DISCONNECTED, LEFT, LEAVING: don't add to either set
