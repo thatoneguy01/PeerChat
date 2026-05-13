@@ -88,10 +88,13 @@ h1 {
   gap: 14px;
   align-content: start;
   min-height: 380px;
+  max-height: min(56vh, 490px);
   padding: 20px;
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.56);
   border: 1px solid rgba(29, 27, 24, 0.07);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .message {
