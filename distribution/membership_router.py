@@ -7,7 +7,7 @@ Integrates with the Membership Service to maintain a cached peer list that is:
   - Filtered to return only ACTIVE peers (holds BACKFILLING peers until they're ready)
 
 Implements PeerRegistry so it's a drop-in replacement for InMemoryRegistry.
-No changes to BroadcastNode or GossipNode are needed.
+No changes to BroadcastNode are needed.
 """
 
 import threading
