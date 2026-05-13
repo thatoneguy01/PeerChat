@@ -1,7 +1,4 @@
-import pytest
-
 from peer_discovery.membership.presence import (
-    PresenceEntry,
     PresenceManager,
     PresenceState,
 )
@@ -178,3 +175,16 @@ def test_get_all_entries_returns_copy():
     snap = pm.get_all_entries()
     snap.pop("alice")
     assert pm.get_member_presence("alice") is not None
+
+
+def test_returned_entries_do_not_mutate_internal_state():
+    pm, _ = make_pm()
+    pm.register_member("alice")
+
+    entry = pm.get_member_presence("alice")
+    entry.state = PresenceState.DEAD
+
+    entries = pm.get_all_entries()
+    entries["alice"].state = PresenceState.DEAD
+
+    assert pm.get_member_presence("alice").state == PresenceState.ALIVE
