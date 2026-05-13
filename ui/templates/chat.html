@@ -15,13 +15,6 @@
         {% endif %}
       </h1>
     </div>
-    <p class="subtitle">
-      {% if selected_user %}
-        You entered this room by selecting a user from the list.
-      {% else %}
-        Flask, Jinja2, and HTMX wired for incremental chat updates.
-      {% endif %}
-    </p>
   </header>
 
   <section id="message-stream" class="message-stream" aria-live="polite">

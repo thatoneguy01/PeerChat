@@ -86,6 +86,7 @@ h1 {
 .message-stream {
   display: grid;
   gap: 14px;
+  align-content: start;
   min-height: 380px;
   padding: 20px;
   border-radius: 22px;
@@ -96,6 +97,7 @@ h1 {
 .message {
   width: fit-content;
   max-width: min(72ch, 90%);
+  align-self: start;
   padding: 16px 18px;
   border-radius: 20px;
   display: grid;
