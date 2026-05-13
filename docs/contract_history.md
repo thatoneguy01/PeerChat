@@ -9,10 +9,11 @@
 
 ## What Message Distribution provides you
 
-Two hooks, nothing more:
+Three hooks:
 
 1. **`BroadcastNode.on_message`** — callback fired exactly once per unique message, in **causal order**. Register your storage writer here.
 2. **`BroadcastNode.deduplicate(msg_id)`** — atomic check-and-mark. Use it if you want to gate your own processing.
+3. **`BroadcastNode.send_to_peer(host, port, msg)`** — direct one-peer send for replay chunks.
 
 That's the whole API surface between us.
 
@@ -24,6 +25,7 @@ from distribution import BroadcastNode, Message
 node = BroadcastNode(host, port, peer_registry)
 node.on_message = lambda msg: storage.append(msg)   # YOU register this
 node.start()
+node.send_to_peer("127.0.0.1", 5004, replay_chunk_msg)
 ```
 
 - `msg` is the full `Message` dataclass (`content`, `sender`, `id`, `timestamp`, `signature`, `ttl`, `vector_clock`).
@@ -88,15 +90,16 @@ Coordinate with the UI team on who owns this shim. Default: whichever team ships
 
 When a new peer joins (Peer Discovery fires `JOIN_ACCEPTED` then `HISTORY_BACKFILL_COMPLETE`), you replay the backlog.
 
-**Do NOT replay via `node.broadcast()`.** If you do, every peer receives every old message a second time — gossip will re-deliver them, and `Message.id` dedup will save you per-node but waste massive bandwidth.
+**Do NOT replay via `node.broadcast()`.** If you do, every peer receives every recovery chunk even though only one peer needs it. `Message.id` dedup will save each node from duplicate processing, but it still wastes bandwidth.
 
 Correct approach:
 
 1. Peer Discovery tells you a new peer joined (you coordinate that channel with them — not via us).
-2. Send the backlog **directly** to the new peer over a separate WebSocket / TCP connection.
-3. On the receiving side, feed the backlog into storage, optionally bypassing `broadcast()` entirely.
+2. Build replay chunk messages.
+3. Call `node.send_to_peer(target_host, target_port, replay_chunk_msg)` for each chunk.
+4. On the receiving side, your `on_message` handler ingests the chunk and writes it to storage.
 
-MD does not need to know this happens. We do not want replayed history re-entering gossip.
+`send_to_peer()` reuses MD's WebSocket ACK/retry path, but it sends only to the target peer. MD copies the message with `ttl=0`, so the target can process it locally without re-forwarding it into the room.
 
 ## What we guarantee
 
@@ -120,12 +123,12 @@ MD does not need to know this happens. We do not want replayed history re-enteri
 
 The board mentions chunked transfer for history. MD doesn't care how you chunk — but:
 
-- Each chunk sent via `broadcast()` will be dedup'd by `msg.id`. Give each chunk a unique `id`.
-- Each chunk fans out to all peers. A 100-chunk file = 100× the broadcast cost. Strongly consider a direct peer-to-peer transfer bypassing gossip for replay chunks.
+- Each chunk sent via `send_to_peer()` will still be dedup'd by `msg.id` on the receiving node. Give each chunk a unique `id`.
+- Each chunk goes only to the target peer. A 100-chunk recovery sends 100 peer messages, not 100 chunks times every peer in the room.
 
 ## Open questions we need you to confirm by EOD 2026-05-12
 
-- **Q1:** Confirm you replay history **outside** `node.broadcast()`. Yes/no.
+- **Q1:** Confirm you replay history with `node.send_to_peer()`, not `node.broadcast()`. Yes/no.
 - **Q2:** Who owns the listener fan-out shim — you or UI? Propose: you, since storage has a harder durability requirement.
 - **Q3:** How does Peer Discovery signal "new peer needs backlog" to you? We don't know; please confirm with them and let us know if you need anything from us in that channel.
 - **Q4:** Do you want a pre-delivery hook (e.g., `on_before_deliver(msg)`) so you can checkpoint **before** the UI sees the message? Default: no. Easy to add if yes.
