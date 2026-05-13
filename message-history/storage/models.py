@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, Mapping, Any
 import json
 
 
@@ -35,8 +35,11 @@ class Message:
     @staticmethod
     def from_json(line: str) -> "Message":
         """Deserialize one JSON line from the log back into a Message object."""
-        data = json.loads(line)
+        return Message.from_dict(json.loads(line))
 
+    @staticmethod
+    def from_dict(data: Mapping[str, Any]) -> "Message":
+        """Build a stored Message from a decoded JSON payload."""
         return Message(
             id=data["id"],
             content=data["content"],
