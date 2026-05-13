@@ -20,10 +20,10 @@ class FakeBroadcastMessage:
 
 class FakeBroadcaster:
     def __init__(self):
-        self.messages = []
+        self.sent = []
 
-    def broadcast(self, message):
-        self.messages.append(message)
+    def send_to_peer(self, host, port, message):
+        self.sent.append((host, port, message))
 
 
 def make_message(
@@ -52,7 +52,7 @@ def clean_storage():
     shutil.rmtree(INDEX_DIR, ignore_errors=True)
 
 
-def test_stream_missing_history_broadcasts_targeted_chunks():
+def test_stream_missing_history_sends_direct_chunks():
     store = LocalMessageStore()
     for i in range(5):
         store.save(make_message(f"msg-{i + 1:03}", f"msg {i + 1}", seq=i + 1))
@@ -66,7 +66,8 @@ def test_stream_missing_history_broadcasts_targeted_chunks():
     )
 
     stats = streamer.stream_missing_history(
-        target_user_id="127.0.0.1:5002",
+        target_host="127.0.0.1",
+        target_port=5002,
         have_vector_clock={"127.0.0.1:5001": 1},
         transfer_id="recover-abc",
         chunk_size=2,
@@ -74,21 +75,23 @@ def test_stream_missing_history_broadcasts_targeted_chunks():
 
     assert stats == {
         "transfer_id": "recover-abc",
-        "target_user_id": "127.0.0.1:5002",
+        "target_host": "127.0.0.1",
+        "target_port": 5002,
         "chunks_sent": 2,
         "messages_sent": 4,
     }
-    assert len(broadcaster.messages) == 2
+    assert len(broadcaster.sent) == 2
+    assert broadcaster.sent[0][0:2] == ("127.0.0.1", 5002)
+    assert broadcaster.sent[1][0:2] == ("127.0.0.1", 5002)
 
-    first_payload = json.loads(broadcaster.messages[0].content)
+    first_payload = json.loads(broadcaster.sent[0][2].content)
     assert first_payload["type"] == "history_chunk"
-    assert first_payload["target_user_id"] == "127.0.0.1:5002"
     assert first_payload["source_user_id"] == "127.0.0.1:5001"
     assert first_payload["chunk_id"] == 1
     assert first_payload["is_last"] is False
     assert [msg["id"] for msg in first_payload["messages"]] == ["msg-002", "msg-003"]
 
-    second_payload = json.loads(broadcaster.messages[1].content)
+    second_payload = json.loads(broadcaster.sent[1][2].content)
     assert second_payload["is_last"] is True
     assert [msg["id"] for msg in second_payload["messages"]] == ["msg-004", "msg-005"]
 
@@ -106,7 +109,8 @@ def test_handle_transport_message_saves_chunk_for_self():
         message_factory=FakeBroadcastMessage,
     )
     source_streamer.stream_missing_history(
-        target_user_id="127.0.0.1:5002",
+        target_host="127.0.0.1",
+        target_port=5002,
         have_vector_clock={},
         transfer_id="recover-abc",
         chunk_size=10,
@@ -122,7 +126,7 @@ def test_handle_transport_message_saves_chunk_for_self():
         message_factory=FakeBroadcastMessage,
     )
 
-    result = target_streamer.handle_transport_message(broadcaster.messages[0])
+    result = target_streamer.handle_transport_message(broadcaster.sent[0][2])
 
     assert result["handled"] is True
     assert result["saved"] == 2
@@ -130,7 +134,7 @@ def test_handle_transport_message_saves_chunk_for_self():
     assert [msg.id for msg in target_store.get_recent()] == ["msg-001", "msg-002"]
 
 
-def test_handle_transport_message_ignores_chunks_for_other_targets():
+def test_handle_transport_message_ignores_non_history_messages():
     store = LocalMessageStore()
     streamer = HistoryChunkStreamer(
         store=store,
@@ -139,10 +143,9 @@ def test_handle_transport_message_ignores_chunks_for_other_targets():
         message_factory=FakeBroadcastMessage,
     )
     payload = {
-        "type": "history_chunk",
+        "type": "chat_message",
         "transfer_id": "recover-abc",
         "chunk_id": 1,
-        "target_user_id": "127.0.0.1:5002",
         "messages": [json.loads(make_message("msg-001", "hello").to_json())],
     }
 
@@ -150,5 +153,5 @@ def test_handle_transport_message_ignores_chunks_for_other_targets():
         FakeBroadcastMessage(content=json.dumps(payload), sender="127.0.0.1:5001")
     )
 
-    assert result == {"handled": False, "reason": "not_target"}
+    assert result == {"handled": False, "reason": "not_history_chunk"}
     assert store.get_recent() == []

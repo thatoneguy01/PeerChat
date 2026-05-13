@@ -27,9 +27,8 @@ class HistoryChunkStreamer:
     """
     Streams history chunks through the existing Message Distribution transport.
 
-    BroadcastNode only supports broadcast fanout today, so every chunk carries a
-    target_user_id. Non-target peers can receive the transport message but ignore
-    the recovery payload.
+    Uses BroadcastNode.send_to_peer() so each recovery chunk goes only to the
+    recovering peer and is not fanned out to the whole room.
     """
 
     def __init__(
@@ -46,14 +45,15 @@ class HistoryChunkStreamer:
 
     def stream_missing_history(
         self,
-        target_user_id: str,
+        target_host: str,
+        target_port: int,
         have_vector_clock: Dict[str, int],
         transfer_id: Optional[str] = None,
         chunk_size: int = 100,
         delay_seconds: float = 0.0,
     ) -> Dict[str, Any]:
         """
-        Send missing messages to target_user_id one chunk at a time.
+        Send missing messages to one peer one chunk at a time.
 
         Returns lightweight stats that callers can log or expose in tests.
         """
@@ -66,21 +66,21 @@ class HistoryChunkStreamer:
 
         for chunk in chunks:
             payload = dict(chunk)
-            payload["target_user_id"] = target_user_id
             payload["source_user_id"] = self.self_user_id
 
             transport_message = self.message_factory(
                 content=json.dumps(payload, separators=(",", ":")),
                 sender=self.self_user_id,
             )
-            self.broadcaster.broadcast(transport_message)
+            self.broadcaster.send_to_peer(target_host, target_port, transport_message)
 
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
 
         return {
             "transfer_id": transfer_id,
-            "target_user_id": target_user_id,
+            "target_host": target_host,
+            "target_port": target_port,
             "chunks_sent": len(chunks),
             "messages_sent": sum(len(chunk["messages"]) for chunk in chunks),
         }
@@ -89,7 +89,8 @@ class HistoryChunkStreamer:
         """
         Try to ingest a recovery chunk from a distribution Message.
 
-        Non-recovery chat messages and chunks for other peers are ignored.
+        Non-recovery chat messages are ignored. Distribution is responsible for
+        direct delivery, so a valid history chunk received here is for this node.
         """
         try:
             payload = json.loads(transport_message.content)
@@ -98,9 +99,6 @@ class HistoryChunkStreamer:
 
         if payload.get("type") != HISTORY_CHUNK:
             return {"handled": False, "reason": "not_history_chunk"}
-
-        if payload.get("target_user_id") != self.self_user_id:
-            return {"handled": False, "reason": "not_target"}
 
         messages = []
         for raw_message in payload.get("messages", []):
