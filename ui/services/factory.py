@@ -5,7 +5,7 @@ from .mock_service import MockService
 from .service import Service
 
 
-def create_chat_service(mock_data_enabled: bool) -> ChatService:
+def create_chat_service(mock_data_enabled: bool, refreshes: dict[str, callable]) -> ChatService:
     if mock_data_enabled:
         return MockService()
-    return Service()
+    return Service(refreshes=refreshes)
