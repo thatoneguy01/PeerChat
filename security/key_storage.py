@@ -15,6 +15,7 @@ class InvalidKeyError(KeyStoreError):
     # Exception raised when an invalid key is provided to the key store
     pass
 
+
 class InMemoryKeyStore:
     """
     Stores active encryption keys in memory
@@ -38,6 +39,7 @@ class InMemoryKeyStore:
         """
         self._active_key_id: int | None = None
         self._keys: dict[int, bytes] = {}
+
 
     def set_active_key(self, key_id: int, key: bytes) -> None:
         """
@@ -64,6 +66,7 @@ class InMemoryKeyStore:
         self._keys[key_id] = bytes(key)
         self._active_key_id = key_id
 
+
     def get_active_key(self) -> bytes:
         """
         Return the currently active group key
@@ -76,6 +79,7 @@ class InMemoryKeyStore:
         if self._active_key_id is None:
             raise MissingKeyError("No active group key loaded")
         return self._keys[self._active_key_id]
+
 
     def get_active_key_id(self) -> int:
         """
@@ -92,6 +96,7 @@ class InMemoryKeyStore:
             raise MissingKeyError("No active group key loaded")
         return self._active_key_id
 
+
     def clear(self) -> None:
         """
         Remove all keys from memory.
@@ -106,6 +111,7 @@ class InMemoryKeyStore:
 
         self._keys.clear()
         self._active_key_id = None
+
 
     def get_key(self, key_id: int) -> bytes:
         """
@@ -154,6 +160,7 @@ class InMemoryKeyStore:
         self._keys.pop(key_id, None)
         if self._active_key_id == key_id:
             self._active_key_id = None
+
 
     def __repr__(self) -> str:
         """
