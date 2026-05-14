@@ -10,6 +10,7 @@ from .models import Message
 
 
 HISTORY_CHUNK = "history_chunk"
+RECOVER_REQUEST = "recover_request"
 
 
 def _default_message_factory():
@@ -85,21 +86,90 @@ class HistoryChunkStreamer:
             "messages_sent": sum(len(chunk["messages"]) for chunk in chunks),
         }
 
+    def send_recover_request(
+        self,
+        provider_host: str,
+        provider_port: int,
+        requester_host: str,
+        requester_port: int,
+        transfer_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ask one provider peer to stream the history this node is missing.
+
+        The request carries this node's latest vector clock so the provider can
+        avoid sending messages already stored locally.
+        """
+        transfer_id = transfer_id or str(uuid.uuid4())
+        payload = {
+            "type": RECOVER_REQUEST,
+            "transfer_id": transfer_id,
+            "requester_id": self.self_user_id,
+            "requester_host": requester_host,
+            "requester_port": requester_port,
+            "have_vector_clock": self.store.get_latest_vector_clock(),
+        }
+
+        transport_message = self.message_factory(
+            content=json.dumps(payload, separators=(",", ":")),
+            sender=self.self_user_id,
+        )
+        self.broadcaster.send_to_peer(provider_host, provider_port, transport_message)
+
+        return {
+            "transfer_id": transfer_id,
+            "provider_host": provider_host,
+            "provider_port": provider_port,
+            "requester_host": requester_host,
+            "requester_port": requester_port,
+            "have_vector_clock": payload["have_vector_clock"],
+        }
+
     def handle_transport_message(self, transport_message) -> Dict[str, Any]:
         """
-        Try to ingest a recovery chunk from a distribution Message.
+        Handle a recovery transport message from Distribution.
 
-        Non-recovery chat messages are ignored. Distribution is responsible for
-        direct delivery, so a valid history chunk received here is for this node.
+        Supports both recover_request and history_chunk payloads. Non-recovery
+        chat messages are ignored.
         """
         try:
             payload = json.loads(transport_message.content)
         except (TypeError, json.JSONDecodeError):
             return {"handled": False, "reason": "not_json"}
 
-        if payload.get("type") != HISTORY_CHUNK:
-            return {"handled": False, "reason": "not_history_chunk"}
+        payload_type = payload.get("type")
+        if payload_type == RECOVER_REQUEST:
+            return self._handle_recover_request(payload)
+        if payload_type == HISTORY_CHUNK:
+            return self._handle_history_chunk(payload)
 
+        return {"handled": False, "reason": "not_recovery_message"}
+
+    def _handle_recover_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            requester_host = str(payload["requester_host"])
+            requester_port = int(payload["requester_port"])
+        except (KeyError, TypeError, ValueError):
+            return {"handled": False, "reason": "invalid_recover_request"}
+
+        have_vector_clock = payload.get("have_vector_clock", {})
+        if not isinstance(have_vector_clock, dict):
+            have_vector_clock = {}
+
+        stats = self.stream_missing_history(
+            target_host=requester_host,
+            target_port=requester_port,
+            have_vector_clock=have_vector_clock,
+            transfer_id=payload.get("transfer_id"),
+        )
+        return {
+            "handled": True,
+            "type": RECOVER_REQUEST,
+            "requester_id": payload.get("requester_id"),
+            **stats,
+        }
+
+    def _handle_history_chunk(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         messages = []
         for raw_message in payload.get("messages", []):
             try:
@@ -110,6 +180,7 @@ class HistoryChunkStreamer:
         result = self.store.save_many(messages)
         return {
             "handled": True,
+            "type": HISTORY_CHUNK,
             "transfer_id": payload.get("transfer_id"),
             "chunk_id": payload.get("chunk_id"),
             "is_last": bool(payload.get("is_last", False)),

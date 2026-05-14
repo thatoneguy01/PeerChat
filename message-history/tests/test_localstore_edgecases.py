@@ -9,6 +9,7 @@ from storage import Message, LocalMessageStore
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = BASE_DIR / "logs"
 INDEX_DIR = BASE_DIR / "index"
+SNAPSHOT_DIR = BASE_DIR / "snapshots"
 ACTIVE_LOG = LOG_DIR / "active.log.jsonl"
 
 
@@ -37,6 +38,7 @@ def make_message(
 def clean_storage():
     shutil.rmtree(LOG_DIR, ignore_errors=True)
     shutil.rmtree(INDEX_DIR, ignore_errors=True)
+    shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)
     yield
 
 

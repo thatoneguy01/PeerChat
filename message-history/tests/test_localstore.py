@@ -9,6 +9,7 @@ from storage import Message, LocalMessageStore
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = BASE_DIR / "logs"
 INDEX_DIR = BASE_DIR / "index"
+SNAPSHOT_DIR = BASE_DIR / "snapshots"
 ACTIVE_LOG = LOG_DIR / "active.log.jsonl"
 
 
@@ -38,6 +39,7 @@ def make_message(
 def clean_storage():
     shutil.rmtree(LOG_DIR, ignore_errors=True)
     shutil.rmtree(INDEX_DIR, ignore_errors=True)
+    shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)
 
     yield
 
@@ -348,3 +350,81 @@ class TestHistoryChunks:
 
         with pytest.raises(ValueError):
             store.build_history_chunks({}, "recover-abc", chunk_size=0)
+
+
+# ── Snapshots ────────────────────────────────────────────────────────────────
+
+class TestSnapshots:
+
+    def test_create_snapshot_writes_metadata_and_compressed_log(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "hello", seq=1))
+        store.save(make_message("msg-002", "world", seq=2))
+
+        meta = store.create_snapshot(snapshot_id="snapshot-test")
+
+        assert meta is not None
+        assert meta["snapshot_id"] == "snapshot-test"
+        assert meta["message_count"] == 2
+        assert meta["covers_until_vector_clock"] == {"127.0.0.1:5001": 2}
+        assert len(meta["checksum"]) == 64
+        assert (SNAPSHOT_DIR / "snapshot-test.meta.json").exists()
+        assert (SNAPSHOT_DIR / "snapshot-test.jsonl.gz").exists()
+
+    def test_read_snapshot_messages_returns_saved_messages(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "hello", seq=1))
+        store.save(make_message("msg-002", "world", seq=2))
+        store.create_snapshot(snapshot_id="snapshot-test")
+
+        messages = store.read_snapshot_messages("snapshot-test")
+
+        assert [msg.id for msg in messages] == ["msg-001", "msg-002"]
+
+    def test_compacted_snapshot_still_participates_in_missing_recovery(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "hello", seq=1))
+        store.save(make_message("msg-002", "world", seq=2))
+        store.create_snapshot(snapshot_id="snapshot-test", compact=True)
+        store.save(make_message("msg-003", "again", seq=3))
+
+        messages = store.get_missing_since({"127.0.0.1:5001": 1})
+
+        assert [msg.id for msg in messages] == ["msg-002", "msg-003"]
+
+    def test_get_recent_reads_across_snapshot_and_active_log(self):
+        store = LocalMessageStore()
+        store.save(make_message("msg-001", "one", seq=1))
+        store.save(make_message("msg-002", "two", seq=2))
+        store.create_snapshot(snapshot_id="snapshot-test", compact=True)
+        store.save(make_message("msg-003", "three", seq=3))
+
+        messages = store.get_recent(limit=2)
+
+        assert [msg.id for msg in messages] == ["msg-002", "msg-003"]
+
+    def test_auto_snapshot_triggers_after_threshold_active_messages(self):
+        store = LocalMessageStore(snapshot_threshold=3)
+        store.save(make_message("msg-001", "one", seq=1))
+        store.save(make_message("msg-002", "two", seq=2))
+
+        assert store.list_snapshots() == []
+
+        store.save(make_message("msg-003", "three", seq=3))
+
+        snapshots = store.list_snapshots()
+        assert len(snapshots) == 1
+        assert snapshots[0]["message_count"] == 3
+        assert [msg.id for msg in store.read_snapshot_messages("snapshot-0001")] == [
+            "msg-001",
+            "msg-002",
+            "msg-003",
+        ]
+
+        with ACTIVE_LOG.open("r", encoding="utf-8") as f:
+            assert f.read() == ""
+
+        store.save(make_message("msg-004", "four", seq=4))
+
+        messages = store.get_missing_since({"127.0.0.1:5001": 2})
+        assert [msg.id for msg in messages] == ["msg-003", "msg-004"]
