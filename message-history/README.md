@@ -618,3 +618,80 @@ make clean
 | `build_history_chunks(...)` | Recovery provider chunked direct-send payloads     |
 | `create_snapshot(...)`      | Compacts older local history into compressed files |
 | `read_snapshot_messages()`  | Reads verified snapshot contents for recovery      |
+
+---
+
+## Integration Test Plan
+
+### Third Node Joins an Existing Network and Recovers History
+
+This is a full system integration scenario across Membership, Distribution, and
+History. It is not only a History unit test.
+
+#### Goal
+
+Verify that a new node can join an existing two-node network, recover previous
+chat history through History recovery, transition to `ACTIVE`, and then receive
+new live messages through Distribution.
+
+#### Setup
+
+```text
+node1 = 127.0.0.1:6001
+node2 = 127.0.0.1:6002
+node3 = 127.0.0.1:6003
+```
+
+#### Flow
+
+1. Start `MembershipService`.
+2. Start `BroadcastNode` servers for node1 and node2.
+3. Register node1 and node2 with Membership.
+4. Complete backfill for node1 and node2 so both become `ACTIVE`.
+5. Send several live chat messages from node1.
+6. Verify node1 and node2 `LocalMessageStore` instances persist those messages.
+7. Start node3 `BroadcastNode` server and `LocalMessageStore`.
+8. Register node3 with Membership.
+9. Verify node3 is `JOINING` or `BACKFILLING`, not `ACTIVE`.
+10. Call `start_history_backfill(node3)`.
+11. Have node3 send a `recover_request` to one `ACTIVE` provider, such as node1.
+12. Have node1 handle the `recover_request`, read snapshots plus active log,
+    filter by node3's `have_vector_clock`, and stream `history_chunk` messages
+    back to node3 using `send_to_peer()`.
+13. Have node3 handle each `history_chunk` and persist recovered messages with
+    `save_many()`.
+14. Verify node3 now has the historical messages sent before it joined.
+15. Call `complete_history_backfill(node3)`.
+16. Verify node3 becomes `ACTIVE`.
+17. Send a new live chat message from node2.
+18. Verify node1, node2, and node3 all persist the new live message.
+
+#### Assertions
+
+- node3 does not receive normal live broadcasts before
+  `HISTORY_BACKFILL_COMPLETE`.
+- Recovery chunks are sent through `send_to_peer()`, not `broadcast()`.
+- Recovery transport messages are not stored as normal chat messages.
+- If node3's `have_vector_clock` is empty, the provider sends all missing
+  history from snapshots plus active log.
+- If node3's `have_vector_clock` is partial, the provider sends only messages
+  with `sender_seq > have_vector_clock[sender]`.
+- After `complete_history_backfill(node3)`, node3 becomes `ACTIVE` and receives
+  live broadcasts.
+
+#### Important Wiring
+
+The Distribution `on_message` handler should route recovery messages before
+saving normal chat messages:
+
+```python
+def on_message(msg):
+    result = streamer.handle_transport_message(msg)
+    if result.get("handled"):
+        return
+
+    store.save(msg)
+```
+
+This prevents `recover_request` and `history_chunk` transport messages from
+being stored as normal chat history.
