@@ -136,6 +136,42 @@ h1 {
   gap: 12px;
 }
 
+/* Layout for the main chat area with users list on the left */
+.main-grid {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 20px;
+  align-items: start;
+  width: min(1100px, 100%);
+}
+
+.users-box {
+  width: 100%;
+}
+
+.users-list-card {
+  padding: 18px;
+  border-radius: 18px;
+  background: rgba(255,255,255,0.7);
+  border: 1px solid rgba(29,27,24,0.06);
+}
+
+.users-list.simple {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.users-list.simple .user-item {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.9);
+  border: 1px solid rgba(29,27,24,0.06);
+  font-weight: 600;
+}
+
 .users-card {
   gap: 18px;
 }
@@ -244,5 +280,9 @@ button:hover {
 
   .subtitle {
     text-align: left;
+  }
+
+  .main-grid {
+    grid-template-columns: 1fr;
   }
 }
