@@ -201,8 +201,10 @@ sender_seq = msg.vector_clock.get(msg.sender, 0)
 
 ## Recovery Request
 
-When a node joins or returns after being offline, it should ask one peer for
-missing history.
+When a node joins or returns after being offline, it sends a `recover_request`
+to all active peers. The request contains the target node's latest vector clock.
+Each active peer compares that vector clock with its own local history and sends
+back only the messages the target is missing.
 
 Example request:
 
@@ -232,6 +234,43 @@ A brand-new node can send:
   "have_vector_clock": {}
 }
 ```
+
+## All-Peer Vector Clock Check
+
+The target does not know which peer has the missing messages. It only knows what
+it already has. That is why the target sends one recovery request to every
+active peer.
+
+```text
+Target -> Peer B: recover_request + target vector clock
+Target -> Peer C: recover_request + target vector clock
+Target -> Peer D: recover_request + target vector clock
+```
+
+The vector clock does not know what B, C, or D have. Each peer checks its own
+local store.
+
+Example:
+
+```text
+Target vector clock:
+  {"A": 2}
+
+Peer B local history:
+  A:1, A:2, A:3
+  -> B sends A:3
+
+Peer C local history:
+  A:1, A:2
+  -> C sends nothing
+
+Peer D local history:
+  A:1, A:2, A:3, A:4
+  -> D sends A:3, A:4
+```
+
+If multiple peers send the same message, the target stores it once and skips the
+duplicate by `message.id`.
 
 ## Choosing Messages to Send
 
@@ -311,21 +350,21 @@ If the sender does not receive an ACK, it can retry the same chunk.
 ```text
 1. Node joins or comes back online.
 2. Node loads latest_vector_clock.json from local storage.
-3. Node sends recover_request to a reachable peer.
-4. Peer checks whether snapshot data is needed.
-5. Peer streams snapshot chunks if needed.
-6. Peer streams active-log delta chunks.
-7. Receiver deduplicates messages by message.id.
-8. Receiver appends new messages to local log.
-9. Receiver updates indexes and latest vector clock.
-10. Receiver ACKs each chunk.
-11. Node is caught up and can continue receiving live messages normally.
+3. Node sends recover_request to all active peers.
+4. Each active peer checks the target vector clock against its local store.
+5. Peers with missing messages build history chunks.
+6. Peers send chunks directly with send_to_peer().
+7. Target receives chunks from one or more peers.
+8. Target deduplicates messages by message.id.
+9. Target appends new messages to local log.
+10. Target updates indexes and latest vector clock.
+11. Node is caught up as chunks arrive.
 ```
 
 ## Open Decisions
 
 - Exact chunk size by message count or byte size
-- Whether recovery should ask one peer or multiple peers
+- Whether all-peer fanout should later be capped for very large rooms
 - How many times to retry failed chunks
 - How often to create snapshots
 - How long to keep old snapshots
