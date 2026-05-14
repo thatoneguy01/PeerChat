@@ -74,7 +74,7 @@ class InMemoryKeyStore:
         """
 
         if self._active_key_id is None:
-            raise RuntimeError("No active group key loaded")
+            raise MissingKeyError("No active group key loaded")
         return self._keys[self._active_key_id]
 
     def get_active_key_id(self) -> int:
@@ -89,7 +89,7 @@ class InMemoryKeyStore:
         """
 
         if self._active_key_id is None:
-            raise RuntimeError("No active group key loaded")
+            raise MissingKeyError("No active group key loaded")
         return self._active_key_id
 
     def clear(self) -> None:
