@@ -18,6 +18,7 @@ This module handles:
 - Avoiding duplicate messages
 - Helping a node catch up with recent messages
 - Creating snapshots and compacting old logs
+- recover the whole system?
 
 ## Relationship With Message Distribution
 
@@ -137,8 +138,12 @@ index/
 A snapshot is a compacted storage checkpoint for older history.
 
 Because chat history needs to preserve old messages, the snapshot should still
-contain the messages it covers. The main difference is that the snapshot is
-compressed and no longer part of the active append-only log.
+contain the active-log messages it covers. The main difference is that the
+snapshot is compressed and no longer part of the active append-only log.
+
+By default, each node automatically creates a snapshot after 200 messages have
+accumulated in `active.log.jsonl`. The snapshot contains only the current active
+log contents, not older snapshot contents, then the active log is cleared.
 
 Recommended files:
 
@@ -166,6 +171,13 @@ The metadata file stores what the snapshot covers:
 
 After a snapshot is safely written and verified, old active log entries covered
 by that snapshot can be deleted or compacted.
+
+> **Implemented in** `storage/local_message_store.py` — `save()` triggers
+> automatic snapshotting when the active log reaches 200 messages.
+> `create_snapshot()` writes both files atomically enough for local recovery,
+> `read_snapshot_messages()` validates the checksum before reading, and
+> `get_missing_since()` reads from snapshots plus the active log so compacted
+> messages can still be replayed.
 
 ## Saving a New Message
 
@@ -197,12 +209,14 @@ Example request:
 ```json
 {
   "type": "recover_request",
-  "node": "127.0.0.1:5004",
+  "transfer_id": "recover-abc",
+  "requester_id": "127.0.0.1:5004",
+  "requester_host": "127.0.0.1",
+  "requester_port": 5004,
   "have_vector_clock": {
     "127.0.0.1:5001": 120,
     "127.0.0.1:5002": 98
-  },
-  "known_snapshot_id": "snapshot-0001"
+  }
 }
 ```
 
@@ -211,9 +225,11 @@ A brand-new node can send:
 ```json
 {
   "type": "recover_request",
-  "node": "127.0.0.1:5004",
-  "have_vector_clock": {},
-  "known_snapshot_id": null
+  "transfer_id": "recover-abc",
+  "requester_id": "127.0.0.1:5004",
+  "requester_host": "127.0.0.1",
+  "requester_port": 5004,
+  "have_vector_clock": {}
 }
 ```
 
@@ -385,7 +401,11 @@ Main class. Instantiate once per node:
 ```python
 from storage import LocalMessageStore
 
+# By default, snapshots are created after 200 active-log messages.
 store = LocalMessageStore()
+
+# Tests or demos can override the threshold.
+small_store = LocalMessageStore(snapshot_threshold=10)
 
 # Save an incoming message (returns True if saved, False if duplicate)
 store.save(msg)
@@ -413,6 +433,15 @@ chunks = store.build_history_chunks(
     transfer_id="recover-abc",
     chunk_size=100,
 )
+
+# Manually create a compressed snapshot if needed. compact=True clears
+# active.log.jsonl after the snapshot is safely written; recovery still reads
+# snapshot + active log.
+meta = store.create_snapshot(snapshot_id="snapshot-0001", compact=True)
+
+# Inspect or read snapshots.
+snapshots = store.list_snapshots()
+messages = store.read_snapshot_messages("snapshot-0001")
 ```
 
 #### Duplicate Handling During Recovery
@@ -475,6 +504,49 @@ streamer.stream_missing_history(
 )
 ```
 
+New or recovering nodes can also send a request through the same adapter:
+
+```python
+streamer.send_recover_request(
+    provider_host="127.0.0.1",
+    provider_port=5001,
+    requester_host="127.0.0.1",
+    requester_port=5004,
+    transfer_id="recover-abc",
+)
+```
+
+When a provider receives that `recover_request` through
+`handle_transport_message()`, it reads the requester's `have_vector_clock`,
+selects missing messages from snapshots plus the active log, and streams
+`history_chunk` messages back with `send_to_peer()`.
+
+#### Snapshots and Compaction
+
+`create_snapshot()` writes:
+
+```text
+snapshots/<snapshot_id>.jsonl.gz
+snapshots/<snapshot_id>.meta.json
+```
+
+The compressed JSONL file contains full serialized `Message` records. The meta
+file stores the snapshot id, creation time, message count, checksum, data file,
+and `covers_until_vector_clock`.
+
+When `compact=True`, the active log is truncated after the snapshot is written.
+The store rebuilds indexes afterward, and reads continue to combine snapshots
+with the active log. This means `get_recent()`, `get_missing_since()`, and
+`build_history_chunks()` still see compacted messages.
+
+Automatic snapshots use `compact=True`. With the default threshold:
+
+```text
+messages 1-200   -> snapshots/snapshot-0001.jsonl.gz, active log cleared
+messages 201-400 -> snapshots/snapshot-0002.jsonl.gz, active log cleared
+messages 401-... -> active.log.jsonl until the next threshold
+```
+
 ---
 
 ### Running Tests
@@ -505,3 +577,5 @@ make clean
 | `save_many(messages)`       | Recovery receiver chunk ingestion and retry dedupe |
 | `get_missing_since(vc)`     | Recovery provider delta selection                  |
 | `build_history_chunks(...)` | Recovery provider chunked direct-send payloads     |
+| `create_snapshot(...)`      | Compacts older local history into compressed files |
+| `read_snapshot_messages()`  | Reads verified snapshot contents for recovery      |
