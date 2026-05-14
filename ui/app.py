@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, send_from_directory
 from services import create_chat_service
 
 
@@ -23,6 +23,10 @@ def create_app() -> Flask:
     @app.get("/users")
     def user_list() -> str:
         return render_template("users.html", users=chat_service.get_users())
+
+    @app.get("/favicon.ico")
+    def favicon() -> object:
+        return send_from_directory(app.static_folder, "assets/favicon.svg", mimetype="image/svg+xml")
 
     @app.get("/chat")
     def chat_room() -> str:
