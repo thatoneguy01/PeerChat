@@ -15,7 +15,7 @@ def create_app() -> Flask:
     )
     app.config["MOCK_DATA_ENABLED"] = mock_data_enabled.strip().lower() == "false"
     chat_service = create_chat_service(app.config["MOCK_DATA_ENABLED"], refreshes={"users": lambda users: render_template("partials/users_list.html", users=users), "messages": lambda messages: render_template("partials/message_list.html", messages=messages)})
-    connected = False
+    app.chat_service = chat_service
 
     @app.get("/")
     def index() -> str:
