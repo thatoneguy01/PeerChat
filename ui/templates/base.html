@@ -4,6 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Chat UI{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="{{ url_for('static', filename='assets/favicon.svg') }}?v=2">
+    <link rel="shortcut icon" href="{{ url_for('static', filename='assets/favicon.svg') }}?v=2">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   </head>
