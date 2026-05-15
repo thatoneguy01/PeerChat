@@ -19,12 +19,12 @@ class Service:
         return self._messages
 
     def post_message(self, content: str) -> None:
-        self._messages.append({"timestamp":time(), "content": content})
+        self._messages.append({"role": "user", "timestamp": time(), "content": content})
         # Call out here to message distribution
 
     def message_received(self, content: str, timestamp: int, sender_ip: str) -> None:
         #call in here from your message distribution to add messages received from other users
-        self._messages.append({"sender": sender_ip, "timestamp": timestamp, "content": content})
+        self._messages.append({"role": "assistant", "sender": sender_ip, "timestamp": timestamp, "content": content})
         self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
 
     def user_connected(self, username: str, ip: str) -> None:
@@ -47,6 +47,13 @@ class Service:
         for user in connected_users:
             self._users.append({"name": user.username, "status": "Online"})
         for message in message_history:
-            self._messages.append({"sender": message.sender_ip, "timestamp": message.timestamp, "content": message.content})
+            self._messages.append(
+                {
+                    "role": "assistant",
+                    "sender": message.sender_ip,
+                    "timestamp": message.timestamp,
+                    "content": message.content,
+                }
+            )
         self._refreshes.get("users", lambda: None)(self._users)  # trigger a refresh of the users partial
         self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial

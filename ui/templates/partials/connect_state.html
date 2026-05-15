@@ -6,21 +6,29 @@
 <div id="connect-area" hx-swap-oob="true">
   {% if connected %}
     <form class="connect-form connected" hx-post="{{ url_for('disconnect') }}" hx-target="#users-box" hx-swap="innerHTML">
-      <label for="username">Username</label>
-      <input id="username" name="username" type="text" value="{{ username }}" readonly>
+      <div class="form-field">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" value="{{ username }}" readonly>
+      </div>
 
-      <label for="ip">IP Address</label>
-      <input id="ip" name="ip" type="text" value="{{ ip }}" readonly>
+      <div class="form-field">
+        <label for="ip">IP Address</label>
+        <input id="ip" name="ip" type="text" value="{{ ip }}" readonly>
+      </div>
 
       <button type="submit">Disconnect</button>
     </form>
   {% else %}
     <form class="connect-form" hx-post="{{ url_for('connect') }}" hx-target="#users-box" hx-swap="innerHTML">
-      <label for="username">Username</label>
-      <input id="username" name="username" type="text" placeholder="alice">
+      <div class="form-field">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" placeholder="alice" required autocomplete="nickname">
+      </div>
 
-      <label for="ip">IP Address</label>
-      <input id="ip" name="ip" type="text" placeholder="192.168.1.2">
+      <div class="form-field">
+        <label for="ip">IP Address</label>
+        <input id="ip" name="ip" type="text" placeholder="192.168.1.2" inputmode="decimal">
+      </div>
 
       <button type="submit">Connect</button>
     </form>
