@@ -31,9 +31,14 @@ class FakeTransportMessage:
 class FakeBroadcaster:
     def __init__(self):
         self.sent = []
+        self.synced = []
 
     def send_to_peer(self, host, port, msg):
         self.sent.append((host, port, msg))
+
+    def sync_vector_clock(self, vector_clock):
+        self.synced.append(dict(vector_clock))
+        return 0
 
 
 @pytest.fixture(autouse=True)
@@ -79,14 +84,24 @@ def test_chat_message_is_saved():
 
 def test_recovery_chunk_is_not_saved_as_chat():
     streamer, store = make_streamer_and_store()
-    listener = _make_storage_listener(streamer, store)
+    listener = _make_storage_listener(streamer, store, streamer.broadcaster)
 
     chunk_payload = {
         "type": HISTORY_CHUNK,
         "transfer_id": "xfer-1",
         "chunk_id": 1,
         "is_last": True,
-        "messages": [],
+        "messages": [
+            {
+                "id": "msg-1",
+                "content": "recovered",
+                "sender": "127.0.0.1:5001",
+                "timestamp": 1.0,
+                "signature": "",
+                "ttl": 0,
+                "vector_clock": {"127.0.0.1:5001": 1},
+            }
+        ],
     }
     chunk_msg = FakeTransportMessage(
         id="chunk-1",
@@ -95,7 +110,8 @@ def test_recovery_chunk_is_not_saved_as_chat():
     )
     listener(chunk_msg)
 
-    assert store.get_recent() == []
+    assert [m.id for m in store.get_recent()] == ["msg-1"]
+    assert streamer.broadcaster.synced == [{"127.0.0.1:5001": 1}]
 
 
 def test_recover_request_is_not_saved_as_chat():

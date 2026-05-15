@@ -127,6 +127,38 @@ class BroadcastNode:
             self._seen.add(msg_id)
             return True
 
+    def sync_vector_clock(self, vector_clock: dict) -> int:
+        """
+        Merge an externally recovered vector clock and release ready messages.
+
+        History recovery stores messages outside the live broadcast path. If a
+        node missed a live predecessor, later live messages may be sitting in
+        the hold-back queue. After History backfills the missing message(s), it
+        can call this with store.get_latest_vector_clock() to unblock any live
+        messages that are now causally ready.
+
+        Returns the number of held messages released.
+        """
+        if not isinstance(vector_clock, dict) or not vector_clock:
+            return 0
+
+        self._vc.merge(vector_clock)
+        released = self._hold_back.drain(self._vc)
+        for msg in released:
+            if self.on_message:
+                self.on_message(msg)
+        return len(released)
+
+    def debug_state(self) -> dict:
+        """Return a small snapshot useful during integration testing."""
+        return {
+            "address": self.address,
+            "vector_clock": self._vc.snapshot(),
+            "seen_count": len(self._seen),
+            "hold_back_count": len(self._hold_back),
+            "hold_back": self._hold_back.snapshot(),
+        }
+
     # ── Event loop ────────────────────────────────────────────────────────────
 
     def _run_loop(self) -> None:

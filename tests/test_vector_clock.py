@@ -230,6 +230,32 @@ class TestBroadcastNodeCausal(unittest.TestCase):
         asyncio.run(node._receive(_msg("127.0.0.1:9001", {}, "legacy")))
         self.assertEqual(delivered, ["legacy"])
 
+    def test_sync_vector_clock_releases_recovered_gap(self):
+        node = self._make_node(19007)
+        delivered = []
+        node.on_message = lambda msg: delivered.append(msg.content)
+
+        sender = "127.0.0.1:9001"
+        asyncio.run(node._receive(_msg(sender, {sender: 2}, "second")))
+        self.assertEqual(delivered, [])
+        self.assertEqual(node.debug_state()["hold_back_count"], 1)
+
+        released = node.sync_vector_clock({sender: 1})
+        self.assertEqual(released, 1)
+        self.assertEqual(delivered, ["second"])
+        self.assertEqual(node.debug_state()["hold_back_count"], 0)
+
+    def test_debug_state_exposes_held_messages(self):
+        node = self._make_node(19008)
+        sender = "127.0.0.1:9001"
+        asyncio.run(node._receive(_msg(sender, {sender: 2}, "blocked")))
+
+        state = node.debug_state()
+        self.assertEqual(state["address"], node.address)
+        self.assertEqual(state["hold_back_count"], 1)
+        self.assertEqual(state["hold_back"][0]["content"], "blocked")
+        self.assertEqual(state["hold_back"][0]["vector_clock"], {sender: 2})
+
     def test_message_serialisation_round_trip_with_vc(self):
         original = Message(content="hi", sender="A:1", vector_clock={"A:1": 3, "B:2": 1})
         restored = Message.from_json(original.to_json())

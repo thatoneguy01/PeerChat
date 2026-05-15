@@ -41,6 +41,20 @@ class HoldBackQueue:
     def add(self, msg: Message) -> None:
         self._queue.append(msg)
 
+    def __len__(self) -> int:
+        return len(self._queue)
+
+    def snapshot(self) -> list[dict]:
+        return [
+            {
+                "id": msg.id,
+                "sender": msg.sender,
+                "content": msg.content,
+                "vector_clock": dict(msg.vector_clock),
+            }
+            for msg in self._queue
+        ]
+
     def drain(self, vc: VectorClock) -> list[Message]:
         """
         Release all messages from the queue that are now causally ready given vc.

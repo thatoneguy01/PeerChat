@@ -29,6 +29,7 @@ def wire_node(
     self_user_id = f"{host}:{port}"
 
     store = LocalMessageStore()
+    _sync_node_vector_clock(node, store)
     streamer = HistoryChunkStreamer(
         store=store,
         broadcaster=node,
@@ -36,7 +37,7 @@ def wire_node(
     )
     listeners = Listeners()
 
-    storage_listener = _make_storage_listener(streamer, store)
+    storage_listener = _make_storage_listener(streamer, store, node)
     listeners.register(storage_listener)
     node.on_message = listeners.dispatch
 
@@ -59,13 +60,30 @@ def wire_node(
     )
 
 
+def _sync_node_vector_clock(node, store: LocalMessageStore) -> int:
+    latest_vc = store.get_latest_vector_clock()
+    sync = getattr(node, "sync_vector_clock", None)
+    if callable(sync):
+        return sync(latest_vc)
+
+    node_vc = getattr(node, "_vc", None)
+    if latest_vc and node_vc is not None:
+        node_vc.merge(latest_vc)
+    return 0
+
+
 def _make_storage_listener(
     streamer: HistoryChunkStreamer,
     store: LocalMessageStore,
+    node=None,
 ):
     def storage_listener(transport_msg: Any) -> None:
         result = streamer.handle_transport_message(transport_msg)
         if result.get("handled"):
+            if result.get("type") == "history_chunk" and node is not None:
+                released = _sync_node_vector_clock(node, store)
+                if released:
+                    logger.info("released %d held live messages after history recovery", released)
             return
 
         try:
