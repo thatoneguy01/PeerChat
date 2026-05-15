@@ -142,5 +142,36 @@ def demo_causal() -> None:
         print(f"  sent: {msg.content!r}  vc={msg.vector_clock}")
 
 
+def demo_sync_vc() -> None:
+    section("sync_vector_clock: node restarts with zeroed VC, live messages arrive referencing history")
+
+    node, log = make_broadcast_node(19104, "node3")
+    node1 = "192.168.0.109:5001"
+    node2 = "192.168.0.110:5002"
+
+    # node3 just restarted. History recovery saved 2 messages from node1
+    # and 1 from node2 into the store, but BroadcastNode._vc is still zeroed.
+    # Two live messages now arrive that reference that history.
+    live1 = Message(content="live: node1 msg 3 (refs history)", sender=node1,
+                    vector_clock={node1: 3, node2: 1})
+    live2 = Message(content="live: node2 msg 2 (refs history)", sender=node2,
+                    vector_clock={node1: 3, node2: 2})
+
+    print("  Two live messages arrive; VC is zeroed so both are held back.")
+    asyncio.run(node._receive(live1))
+    asyncio.run(node._receive(live2))
+    print(f"  Delivered so far: {len(log)}  (expected 0 — VC is zeroed, hold-back stuck)\n")
+
+    # History team calls sync_vector_clock after recovery completes.
+    # Recovered VC reflects what is now in the store: node1 sent 2, node2 sent 1.
+    recovered_vc = {node1: 2, node2: 1}
+    print(f"  Calling sync_vector_clock({recovered_vc}) to seed VC from recovered history ...")
+    asyncio.run(node._apply_vc_sync(recovered_vc))
+    print(f"  Delivered so far: {len(log)}  (expected 2 — both live messages unblocked)\n")
+    for line in log:
+        print(line)
+
+
 if __name__ == "__main__":
     main()
+    demo_sync_vc()
