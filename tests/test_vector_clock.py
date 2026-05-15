@@ -166,6 +166,25 @@ class TestHoldBackQueue(unittest.TestCase):
         # blocked is still in the queue; drain again yields nothing
         self.assertEqual(q.drain(vc), [])
 
+    def test_drain_timeout_delivers_stuck_message_out_of_order(self):
+        vc = VectorClock()
+        q = HoldBackQueue(timeout=0.0)   # expire immediately
+        stuck = _msg("A", {"A": 2}, "stuck")  # gap: A=2, local A=0
+        q.add(stuck)
+        released = q.drain(vc)
+        self.assertEqual(released, [stuck])
+
+    def test_drain_timeout_advances_vc_so_successor_is_released(self):
+        vc = VectorClock()
+        q = HoldBackQueue(timeout=0.0)
+        stuck = _msg("A", {"A": 2}, "stuck")   # missing A=1 predecessor
+        follower = _msg("A", {"A": 3}, "follower")  # needs A=2 first
+        q.add(stuck)
+        q.add(follower)
+        released = q.drain(vc)
+        # timeout flushes stuck, which updates vc to A=2, allowing follower
+        self.assertEqual(released, [stuck, follower])
+
 
 class TestBroadcastNodeCausal(unittest.TestCase):
 
@@ -234,6 +253,39 @@ class TestBroadcastNodeCausal(unittest.TestCase):
         original = Message(content="hi", sender="A:1", vector_clock={"A:1": 3, "B:2": 1})
         restored = Message.from_json(original.to_json())
         self.assertEqual(restored.vector_clock, original.vector_clock)
+
+    def test_sync_vector_clock_unblocks_held_messages(self):
+        node = self._make_node(19007)
+        delivered = []
+        node.on_message = lambda msg: delivered.append(msg.content)
+
+        node1 = "192.168.0.109:5001"
+        node2 = "192.168.0.110:5002"
+
+        # Two live messages referencing history that node doesn't have yet.
+        live1 = _msg(node1, {node1: 3, node2: 1}, "live1")
+        live2 = _msg(node2, {node1: 3, node2: 2}, "live2")
+        asyncio.run(node._receive(live1))
+        asyncio.run(node._receive(live2))
+        self.assertEqual(delivered, [])
+
+        # Recovery completes; seed VC with what the store now knows.
+        asyncio.run(node._apply_vc_sync({node1: 2, node2: 1}))
+        self.assertEqual(delivered, ["live1", "live2"])
+
+    def test_sync_vector_clock_is_idempotent(self):
+        node = self._make_node(19008)
+        delivered = []
+        node.on_message = lambda msg: delivered.append(msg.content)
+
+        sender = "127.0.0.1:9001"
+        m = _msg(sender, {sender: 1}, "hello")
+        asyncio.run(node._receive(m))
+        self.assertEqual(len(delivered), 1)
+
+        # Calling sync again with the same or older VC must not re-deliver.
+        asyncio.run(node._apply_vc_sync({sender: 1}))
+        self.assertEqual(len(delivered), 1)
 
     def test_message_deserialises_without_vc_field(self):
         payload = json.dumps({
