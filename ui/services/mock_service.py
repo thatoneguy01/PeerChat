@@ -17,27 +17,17 @@ class MockService:
             {"name": "Mia Chen", "status": "Away"},
             {"name": "Liam Garcia", "status": "Offline"},
         ]
-        self._messages_by_user: dict[str, list[MessageRecord]] = {}
+        self._messages: list[MessageRecord] = deepcopy(self._BASE_MESSAGES)
 
     def get_users(self) -> list[UserRecord]:
         return self._users
 
-    def _message_key(self, selected_user: str) -> str:
-        return selected_user.strip() or "__default__"
+    def get_messages(self) -> list[MessageRecord]:
+        return self._messages
 
-    def _messages_for(self, selected_user: str) -> list[MessageRecord]:
-        key = self._message_key(selected_user)
-        if key not in self._messages_by_user:
-            self._messages_by_user[key] = deepcopy(self._BASE_MESSAGES)
-        return self._messages_by_user[key]
-
-    def get_messages(self, selected_user: str) -> list[MessageRecord]:
-        return self._messages_for(selected_user)
-
-    def post_user_message(self, selected_user: str, content: str) -> None:
-        messages = self._messages_for(selected_user)
-        messages.append({"role": "user", "content": content})
-        messages.append(
+    def post_message(self, content: str) -> None:
+        self._messages.append({"role": "user", "content": content})
+        self._messages.append(
             {
                 "role": "assistant",
                 "content": "Hook this route to your model, queue, or websocket bridge.",

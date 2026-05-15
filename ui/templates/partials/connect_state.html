@@ -1,0 +1,28 @@
+{#
+  Partial that renders the connect form area. When the server returns this
+  fragment it includes `hx-swap-oob="true"` so HTMX can replace the
+  out-of-band `#connect-area` element on the page.
+#}
+<div id="connect-area" hx-swap-oob="true">
+  {% if connected %}
+    <form class="connect-form connected" hx-post="{{ url_for('disconnect') }}" hx-target="#users-box" hx-swap="innerHTML">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" value="{{ username }}" readonly>
+
+      <label for="ip">IP Address</label>
+      <input id="ip" name="ip" type="text" value="{{ ip }}" readonly>
+
+      <button type="submit">Disconnect</button>
+    </form>
+  {% else %}
+    <form class="connect-form" hx-post="{{ url_for('connect') }}" hx-target="#users-box" hx-swap="innerHTML">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" placeholder="alice">
+
+      <label for="ip">IP Address</label>
+      <input id="ip" name="ip" type="text" placeholder="192.168.1.2">
+
+      <button type="submit">Connect</button>
+    </form>
+  {% endif %}
+</div>
