@@ -34,14 +34,24 @@ ENABLE_HISTORY = os.getenv("PEERCHAT_HISTORY") == "1"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PeerChat demo and interactive runner.")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Reachable host/IP advertised to peers. Default: 127.0.0.1",
+    )
+    parser.add_argument(
+        "--bind-host",
+        help="Host/IP to bind the WebSocket server to. Default: same as --host",
+    )
     parser.add_argument("--port", type=int, help="Run one interactive node on this port.")
     parser.add_argument(
         "--peers",
         nargs="*",
-        type=int,
         default=[],
-        help="Peer ports for interactive mode, for example: --peers 5002 5003",
+        help=(
+            "Peer ports or host:port values, for example: "
+            "--peers 5002 5003 or --peers 10.0.0.16:5003"
+        ),
     )
     return parser.parse_args()
 
@@ -64,12 +74,17 @@ def main():
 def run_interactive(args: argparse.Namespace) -> None:
     logging.getLogger().setLevel(logging.WARNING)
 
-    registry = InMemoryRegistry()
-    registry.add_peer(args.host, args.port)
-    for peer_port in args.peers:
-        registry.add_peer(args.host, peer_port)
+    bind_host = args.bind_host or args.host
+    advertised_host = args.host
+    peers = parse_peer_addresses(args.peers, default_host=advertised_host)
 
-    node = BroadcastNode(args.host, args.port, registry)
+    registry = InMemoryRegistry()
+    registry.add_peer(advertised_host, args.port)
+    for peer_host, peer_port in peers:
+        registry.add_peer(peer_host, peer_port)
+
+    node = BroadcastNode(bind_host, args.port, registry)
+    node.address = f"{advertised_host}:{args.port}"
     history = []
     wiring = None
 
@@ -87,7 +102,7 @@ def run_interactive(args: argparse.Namespace) -> None:
 
         wiring = wire_node(
             node=node,
-            host=args.host,
+            host=advertised_host,
             port=args.port,
             pull_recovery_on_start=True,
         )
@@ -96,7 +111,7 @@ def run_interactive(args: argparse.Namespace) -> None:
         node.on_message = handle_message
         node.start()
 
-    peer_list = ", ".join(str(port) for port in args.peers) or "none"
+    peer_list = ", ".join(f"{host}:{port}" for host, port in peers) or "none"
     print(f"Running {node.address} | peers: {peer_list}")
     print("Commands: send <message> | show | quit")
 
@@ -128,6 +143,17 @@ def run_interactive(args: argparse.Namespace) -> None:
     finally:
         node.stop()
         time.sleep(0.2)
+
+
+def parse_peer_addresses(peer_values: list[str], default_host: str) -> list[tuple[str, int]]:
+    peers = []
+    for value in peer_values:
+        if ":" in value:
+            host, port_text = value.rsplit(":", 1)
+            peers.append((host, int(port_text)))
+        else:
+            peers.append((default_host, int(value)))
+    return peers
 
 
 def is_recovery_transport(msg: Message) -> bool:
