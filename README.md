@@ -120,6 +120,7 @@ node.stop()
 | `stop()` | Shut down the WebSocket server. |
 | `broadcast(msg)` | Originate a message into the network. |
 | `send_to_peer(host, port, msg)` | Send one message to one peer only. Intended for History/Recovery replay chunks. |
+| `sync_vector_clock(vc)` | Advance the local vector clock to at least the values in `vc`, then drain the hold-back queue. Call after history recovery completes. Thread-safe. |
 | `on_message` | Callback `(Message) -> None` fired once per unique delivered message, in causal order. |
 | `deduplicate(msg_id)` | Atomic check-and-mark. Returns `True` for a new id, `False` for a duplicate. |
 
@@ -177,7 +178,7 @@ Already wired via `MembershipRouter`. Confirm the event-name schema (`JOIN_ACCEP
 
 ### History / Recovery & Storage team — `docs/contract_history.md`
 
-Register a listener on `on_message` for logging. Replay backlog to newly-joined peers with `send_to_peer(host, port, msg)`, not `broadcast()` (otherwise recovery chunks are sent to every peer). Direct sends are copied with `ttl=0`, so the target receives the chunk but does not re-forward it.
+Register a listener on `on_message` for logging. Replay backlog to newly-joined peers with `send_to_peer(host, port, msg)`, not `broadcast()` (otherwise recovery chunks are sent to every peer). Direct sends are copied with `ttl=0`, so the target receives the chunk but does not re-forward it. After replay completes, call `node.sync_vector_clock(recovered_vc)` so the causal layer is not blocked by live messages referencing replayed history.
 
 ---
 
