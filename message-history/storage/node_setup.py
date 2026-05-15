@@ -29,6 +29,7 @@ def wire_node(
     self_user_id = f"{host}:{port}"
 
     store = LocalMessageStore()
+    _sync_node_vector_clock(node, store)
     streamer = HistoryChunkStreamer(
         store=store,
         broadcaster=node,
@@ -57,6 +58,13 @@ def wire_node(
         streamer=streamer,
         listeners=listeners,
     )
+
+
+def _sync_node_vector_clock(node, store: LocalMessageStore) -> None:
+    latest_vc = store.get_latest_vector_clock()
+    node_vc = getattr(node, "_vc", None)
+    if latest_vc and node_vc is not None:
+        node_vc.merge(latest_vc)
 
 
 def _make_storage_listener(
