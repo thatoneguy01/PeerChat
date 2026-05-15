@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}Peer Chat{% endblock %}
+
+{% block content %}
+<section class="chat-card">
+  <header class="chat-header">
+    <div>
+      <p class="eyebrow">PeerChat</p>
+      <h1>
+        {% if selected_user %}
+          Chat with {{ selected_user }}
+        {% else %}
+          Chat interface skeleton
+        {% endif %}
+      </h1>
+    </div>
+  </header>
+
+  <section id="message-stream" class="message-stream" aria-live="polite">
+    {% include "partials/message_list.html" %}
+  </section>
+
+  <form
+    id="composer-form"
+    class="composer"
+    hx-post="{{ url_for('post_message') }}"
+    hx-target="#message-stream"
+    hx-swap="innerHTML"
+  >
+    <input type="hidden" name="user" value="{{ selected_user }}" />
+    <label class="sr-only" for="message">Message</label>
+    <textarea id="message" name="message" rows="3" placeholder="Write a message..."></textarea>
+    <div class="composer-actions">
+      <p class="hint">Enter a message to simulate the chat flow.</p>
+      <button type="submit">Send</button>
+    </div>
+  </form>
+</section>
+
+<script>
+  (() => {
+    const composerForm = document.getElementById("composer-form");
+    const messageInput = document.getElementById("message");
+    const selectedUserInput = composerForm?.querySelector('input[name="user"]');
+    const selectedUser = selectedUserInput?.value?.trim() ?? "";
+    const draftStorageKey = `peerchat:draft:${selectedUser}`;
+    const hasStorage = typeof window.localStorage !== "undefined";
+
+    if (!composerForm || !messageInput) {
+      return;
+    }
+
+    const saveDraft = () => {
+      if (!hasStorage || !selectedUser) {
+        return;
+      }
+
+      if (messageInput.value) {
+        window.localStorage.setItem(draftStorageKey, messageInput.value);
+        return;
+      }
+
+      window.localStorage.removeItem(draftStorageKey);
+    };
+
+    const restoreDraft = () => {
+      if (!hasStorage || !selectedUser) {
+        return;
+      }
+
+      const savedDraft = window.localStorage.getItem(draftStorageKey);
+
+      if (savedDraft) {
+        messageInput.value = savedDraft;
+      }
+    };
+
+    const clearDraft = () => {
+      if (!hasStorage || !selectedUser) {
+        return;
+      }
+
+      window.localStorage.removeItem(draftStorageKey);
+    };
+
+    restoreDraft();
+
+    const isTypingTarget = (target) => {
+      if (!(target instanceof HTMLElement)) {
+        return false;
+      }
+
+      if (target.isContentEditable) {
+        return true;
+      }
+
+      return target.matches("input, textarea, select");
+    };
+
+    messageInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (!messageInput.value.trim()) {
+        return;
+      }
+
+      composerForm.requestSubmit();
+    });
+
+    messageInput.addEventListener("input", () => {
+      saveDraft();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+
+      if (event.key === "/" && !isTypingTarget(event.target)) {
+        event.preventDefault();
+        messageInput.focus();
+        messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        messageInput.value = "";
+        clearDraft();
+      }
+    });
+
+    composerForm.addEventListener("htmx:afterRequest", (event) => {
+      if (event.target !== composerForm || !event.detail.successful) {
+        return;
+      }
+
+      messageInput.value = "";
+      clearDraft();
+      messageInput.focus();
+    });
+  })();
+</script>
+{% endblock %}
