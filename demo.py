@@ -20,6 +20,7 @@ import threading
 import asyncio
 import os
 import argparse
+import json
 from distribution import BroadcastNode, InMemoryRegistry, Message
 
 logging.basicConfig(
@@ -73,6 +74,11 @@ def run_interactive(args: argparse.Namespace) -> None:
     wiring = None
 
     def handle_message(msg: Message):
+        if wiring:
+            sync_node_clock_from_store(node, wiring.store)
+            if is_recovery_transport(msg):
+                return
+
         history.append(msg)
         print(f"\n[{node.address}] from {msg.sender}: {msg.content}", flush=True)
 
@@ -114,12 +120,29 @@ def run_interactive(args: argparse.Namespace) -> None:
                 text = text[5:].strip()
 
             if text:
+                if wiring:
+                    sync_node_clock_from_store(node, wiring.store)
                 node.broadcast(Message(content=text, sender=node.address))
     except KeyboardInterrupt:
         print()
     finally:
         node.stop()
         time.sleep(0.2)
+
+
+def is_recovery_transport(msg: Message) -> bool:
+    try:
+        payload = json.loads(msg.content)
+    except (TypeError, json.JSONDecodeError):
+        return False
+
+    return payload.get("type") in {"recover_request", "history_chunk"}
+
+
+def sync_node_clock_from_store(node: BroadcastNode, store) -> None:
+    latest = store.get_latest_vector_clock()
+    if latest:
+        node._vc.merge(latest)
 
 
 def run_demo():
