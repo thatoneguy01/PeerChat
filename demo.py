@@ -18,6 +18,8 @@ import time
 import logging
 import threading
 import asyncio
+import os
+import argparse
 from distribution import BroadcastNode, InMemoryRegistry, Message
 
 logging.basicConfig(
@@ -26,6 +28,21 @@ logging.basicConfig(
 )
 
 PORTS = list(range(5001, 5011))   # 5001 through 5010
+ENABLE_HISTORY = os.getenv("PEERCHAT_HISTORY") == "1"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="PeerChat demo and interactive runner.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, help="Run one interactive node on this port.")
+    parser.add_argument(
+        "--peers",
+        nargs="*",
+        type=int,
+        default=[],
+        help="Peer ports for interactive mode, for example: --peers 5002 5003",
+    )
+    return parser.parse_args()
 
 
 def section(title: str) -> None:
@@ -35,6 +52,77 @@ def section(title: str) -> None:
 
 
 def main():
+    args = parse_args()
+    if args.port is not None:
+        run_interactive(args)
+        return
+
+    run_demo()
+
+
+def run_interactive(args: argparse.Namespace) -> None:
+    logging.getLogger().setLevel(logging.WARNING)
+
+    registry = InMemoryRegistry()
+    registry.add_peer(args.host, args.port)
+    for peer_port in args.peers:
+        registry.add_peer(args.host, peer_port)
+
+    node = BroadcastNode(args.host, args.port, registry)
+    history = []
+    wiring = None
+
+    def handle_message(msg: Message):
+        history.append(msg)
+        print(f"\n[{node.address}] from {msg.sender}: {msg.content}", flush=True)
+
+    if ENABLE_HISTORY:
+        from storage import wire_node
+
+        wiring = wire_node(
+            node=node,
+            host=args.host,
+            port=args.port,
+            pull_recovery_on_start=True,
+        )
+        wiring.listeners.register(handle_message)
+    else:
+        node.on_message = handle_message
+        node.start()
+
+    peer_list = ", ".join(str(port) for port in args.peers) or "none"
+    print(f"Running {node.address} | peers: {peer_list}")
+    print("Commands: send <message> | show | quit")
+
+    try:
+        while True:
+            text = input("> ").strip()
+            if not text:
+                continue
+
+            if text == "quit":
+                break
+
+            if text == "show":
+                messages = wiring.store.get_recent(100) if wiring else history
+                print("History:")
+                for index, msg in enumerate(messages, start=1):
+                    print(f"{index}. [{msg.sender}] {msg.content}")
+                continue
+
+            if text.startswith("send "):
+                text = text[5:].strip()
+
+            if text:
+                node.broadcast(Message(content=text, sender=node.address))
+    except KeyboardInterrupt:
+        print()
+    finally:
+        node.stop()
+        time.sleep(0.2)
+
+
+def run_demo():
     # ── Shared peer list (provided by Discovery team in the real system) ──────
     registry = InMemoryRegistry()
     for port in PORTS:
@@ -57,8 +145,19 @@ def main():
     nodes = []
     for port in PORTS:
         node = BroadcastNode("127.0.0.1", port, registry)
-        node.on_message = make_handler(f"Node :{port}")
-        node.start()
+        if ENABLE_HISTORY:
+            from storage import wire_node
+
+            wiring = wire_node(
+                node=node,
+                host="127.0.0.1",
+                port=port,
+                pull_recovery_on_start=True,
+            )
+            wiring.listeners.register(make_handler(f"Node :{port}"))
+        else:
+            node.on_message = make_handler(f"Node :{port}")
+            node.start()
         nodes.append(node)
 
     time.sleep(0.5)   # wait for all WebSocket servers to finish binding
