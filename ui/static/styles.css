@@ -9,7 +9,9 @@
   --accent-soft: #d9ece8;
   --user-bubble: #1d1b18;
   --assistant-bubble: #ffffff;
-  --shadow: 0 24px 80px rgba(41, 27, 12, 0.14);
+  --shadow: 0 20px 50px rgba(12, 30, 44, 0.14);
+  --radius-lg: 20px;
+  --radius-md: 14px;
 }
 
 * {
@@ -23,11 +25,11 @@ body {
 
 body {
   margin: 0;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-family: "Inter", "Avenir Next", "Segoe UI", sans-serif;
   color: var(--text);
   background:
-    radial-gradient(circle at top left, rgba(22, 93, 82, 0.16), transparent 35%),
-    radial-gradient(circle at bottom right, rgba(214, 158, 92, 0.18), transparent 30%),
+    radial-gradient(circle at top left, rgba(22, 93, 82, 0.12), transparent 36%),
+    radial-gradient(circle at bottom right, rgba(30, 111, 188, 0.1), transparent 30%),
     var(--bg);
 }
 
@@ -35,18 +37,23 @@ body {
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 32px;
+  padding: 28px;
+  gap: 18px;
+}
+
+.connection-bar {
+  width: min(1100px, 100%);
 }
 
 .chat-card {
   width: min(920px, 100%);
   display: grid;
-  gap: 24px;
-  padding: 28px;
+  gap: 18px;
+  padding: 22px;
   border: 1px solid var(--panel-border);
-  border-radius: 28px;
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(12px);
   box-shadow: var(--shadow);
 }
 
@@ -85,14 +92,14 @@ h1 {
 
 .message-stream {
   display: grid;
-  gap: 14px;
+  gap: 12px;
   align-content: start;
-  min-height: 380px;
-  max-height: min(56vh, 490px);
-  padding: 20px;
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.56);
-  border: 1px solid rgba(29, 27, 24, 0.07);
+  min-height: 360px;
+  max-height: min(56vh, 500px);
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: rgba(248, 251, 253, 0.8);
+  border: 1px solid rgba(14, 32, 48, 0.08);
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -101,8 +108,8 @@ h1 {
   width: fit-content;
   max-width: min(72ch, 90%);
   align-self: start;
-  padding: 16px 18px;
-  border-radius: 20px;
+  padding: 12px 14px;
+  border-radius: 12px;
   display: grid;
   gap: 6px;
 }
@@ -114,16 +121,22 @@ h1 {
   border-bottom-right-radius: 6px;
 }
 
+.message.user .message-meta {
+  color: rgba(255, 255, 255, 0.78);
+}
+
 .message.assistant {
   background: var(--assistant-bubble);
-  border: 1px solid rgba(29, 27, 24, 0.08);
+  border: 1px solid rgba(14, 32, 48, 0.1);
   border-bottom-left-radius: 6px;
 }
 
 .message-meta {
+  margin: 0;
   font-size: 0.76rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  font-weight: 600;
 }
 
 .message-body {
@@ -136,11 +149,42 @@ h1 {
   gap: 12px;
 }
 
+.connection-bar #connect-area {
+  display: flex;
+  justify-content: center;
+}
+
+.connect-form {
+  width: min(920px, 100%);
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(12, 30, 44, 0.08);
+}
+
+.form-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.form-field label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
 /* Layout for the main chat area with users list on the left */
 .main-grid {
   display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 20px;
+  grid-template-columns: 250px 1fr;
+  gap: 16px;
   align-items: start;
   width: min(1100px, 100%);
 }
@@ -150,16 +194,23 @@ h1 {
 }
 
 .users-list-card {
-  padding: 18px;
-  border-radius: 18px;
-  background: rgba(255,255,255,0.7);
-  border: 1px solid rgba(29,27,24,0.06);
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 10px 26px rgba(12, 30, 44, 0.08);
+}
+
+.users-list-card h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--text);
 }
 
 .users-list.simple {
   list-style: none;
   padding: 0;
-  margin: 8px 0 0 0;
+  margin: 10px 0 0 0;
   display: grid;
   gap: 8px;
 }
@@ -168,8 +219,14 @@ h1 {
   padding: 10px 12px;
   border-radius: 10px;
   background: rgba(255,255,255,0.9);
-  border: 1px solid rgba(29,27,24,0.06);
-  font-weight: 600;
+  border: 1px solid rgba(14, 32, 48, 0.08);
+  font-weight: 500;
+}
+
+.users-list .no-users {
+  padding: 8px 4px;
+  color: var(--muted);
+  font-size: 0.92rem;
 }
 
 .users-card {
@@ -214,16 +271,38 @@ h1 {
 
 textarea {
   width: 100%;
-  padding: 16px 18px;
+  padding: 12px 14px;
   resize: vertical;
-  border: 1px solid rgba(29, 27, 24, 0.14);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.9);
+  min-height: 84px;
+  border: 1px solid rgba(14, 32, 48, 0.16);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.95);
   color: var(--text);
   font: inherit;
 }
 
+input[type="text"] {
+  width: 100%;
+  height: 42px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(14, 32, 48, 0.16);
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--text);
+  font: inherit;
+}
+
+input[type="text"][readonly] {
+  background: rgba(246, 249, 252, 0.95);
+  color: #475566;
+}
+
 textarea:focus {
+  outline: 3px solid rgba(22, 93, 82, 0.18);
+  border-color: rgba(22, 93, 82, 0.35);
+}
+
+input[type="text"]:focus {
   outline: 3px solid rgba(22, 93, 82, 0.18);
   border-color: rgba(22, 93, 82, 0.35);
 }
@@ -238,16 +317,32 @@ textarea:focus {
 button {
   border: 0;
   border-radius: 999px;
-  padding: 12px 20px;
+  min-height: 42px;
+  padding: 10px 18px;
   background: var(--accent);
   color: white;
   font: inherit;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
 }
 
 button:hover {
   filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(22, 93, 82, 0.25);
+}
+
+button:active {
+  transform: translateY(0);
+}
+
+.connect-form.connected button {
+  background: #8b2f39;
+}
+
+.connect-form.connected button:hover {
+  box-shadow: 0 8px 16px rgba(139, 47, 57, 0.24);
 }
 
 .sr-only {
@@ -267,9 +362,13 @@ button:hover {
     padding: 16px;
   }
 
+  .connect-form {
+    grid-template-columns: 1fr;
+  }
+
   .chat-card {
     padding: 20px;
-    border-radius: 22px;
+    border-radius: var(--radius-lg);
   }
 
   .chat-header,

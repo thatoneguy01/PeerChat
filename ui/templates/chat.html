@@ -24,7 +24,7 @@
       class="composer"
       hx-post="{{ url_for('post_message') }}"
       hx-target="#message-stream"
-      hx-swap="innerHTML"
+      hx-swap="innerHTML scroll:bottom"
     >
       <label class="sr-only" for="message">Message</label>
       <textarea id="message" name="message" rows="3" placeholder="Write a message..."></textarea>
@@ -40,12 +40,17 @@
   (() => {
     const composerForm = document.getElementById("composer-form");
     const messageInput = document.getElementById("message");
+    const messageStream = document.getElementById("message-stream");
     const draftStorageKey = `peerchat:draft`;
     const hasStorage = typeof window.localStorage !== "undefined";
 
-    if (!composerForm || !messageInput) {
+    if (!composerForm || !messageInput || !messageStream) {
       return;
     }
+
+    const scrollMessagesToBottom = () => {
+      messageStream.scrollTop = messageStream.scrollHeight;
+    };
 
     const saveDraft = () => {
       if (!hasStorage) return;
@@ -68,6 +73,7 @@
     };
 
     restoreDraft();
+    scrollMessagesToBottom();
 
     const isTypingTarget = (target) => {
       if (!(target instanceof HTMLElement)) {
@@ -125,6 +131,14 @@
       messageInput.value = "";
       clearDraft();
       messageInput.focus();
+    });
+
+    document.body.addEventListener("htmx:afterSettle", (event) => {
+      if (event.target !== messageStream) {
+        return;
+      }
+
+      scrollMessagesToBottom();
     });
   })();
 </script>
