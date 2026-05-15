@@ -23,7 +23,7 @@ ACTIVE_LOG = LOG_DIR / "active.log.jsonl"
 MSG_ID_INDEX = INDEX_DIR / "message_id.index"
 SENDER_INDEX = INDEX_DIR / "sender_seq.index"
 VC_INDEX = INDEX_DIR / "latest_vector_clock.json"
-DEFAULT_SNAPSHOT_THRESHOLD = 200
+DEFAULT_SNAPSHOT_THRESHOLD = 5
 
 
 class LocalMessageStore:

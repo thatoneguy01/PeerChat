@@ -36,6 +36,14 @@ class FakeBroadcaster:
         self.sent.append((host, port, msg))
 
 
+class FakeNode:
+    def __init__(self):
+        self.synced_vector_clocks = []
+
+    def sync_vector_clock(self, vc):
+        self.synced_vector_clocks.append(dict(vc))
+
+
 @pytest.fixture(autouse=True)
 def clean_storage():
     shutil.rmtree(LOG_DIR, ignore_errors=True)
@@ -96,6 +104,62 @@ def test_recovery_chunk_is_not_saved_as_chat():
     listener(chunk_msg)
 
     assert store.get_recent() == []
+
+
+def test_last_recovery_chunk_syncs_distribution_clock_after_save():
+    streamer, store = make_streamer_and_store()
+    node = FakeNode()
+    listener = _make_storage_listener(streamer, store, node)
+
+    chunk_payload = {
+        "type": HISTORY_CHUNK,
+        "transfer_id": "xfer-1",
+        "chunk_id": 1,
+        "is_last": True,
+        "messages": [
+            {
+                "id": "msg-1",
+                "content": "recovered",
+                "sender": "127.0.0.1:5001",
+                "timestamp": 1.0,
+                "signature": "",
+                "ttl": 10,
+                "vector_clock": {"127.0.0.1:5001": 7},
+            }
+        ],
+    }
+    listener(FakeTransportMessage(id="chunk-1", content=json.dumps(chunk_payload)))
+
+    assert [m.id for m in store.get_recent()] == ["msg-1"]
+    assert node.synced_vector_clocks == [{"127.0.0.1:5001": 7}]
+
+
+def test_non_last_recovery_chunk_does_not_sync_distribution_clock_yet():
+    streamer, store = make_streamer_and_store()
+    node = FakeNode()
+    listener = _make_storage_listener(streamer, store, node)
+
+    chunk_payload = {
+        "type": HISTORY_CHUNK,
+        "transfer_id": "xfer-1",
+        "chunk_id": 1,
+        "is_last": False,
+        "messages": [
+            {
+                "id": "msg-1",
+                "content": "recovered",
+                "sender": "127.0.0.1:5001",
+                "timestamp": 1.0,
+                "signature": "",
+                "ttl": 10,
+                "vector_clock": {"127.0.0.1:5001": 7},
+            }
+        ],
+    }
+    listener(FakeTransportMessage(id="chunk-1", content=json.dumps(chunk_payload)))
+
+    assert [m.id for m in store.get_recent()] == ["msg-1"]
+    assert node.synced_vector_clocks == []
 
 
 def test_recover_request_is_not_saved_as_chat():
