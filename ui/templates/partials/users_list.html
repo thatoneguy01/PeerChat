@@ -1,0 +1,10 @@
+<div class="users-list-card">
+  <h3>Connected Users</h3>
+  <ul class="users-list simple">
+    {% for u in users %}
+      <li class="user-item">{{ u.get('username') or u.get('name') }}</li>
+    {% else %}
+      <li class="no-users">No users connected</li>
+    {% endfor %}
+  </ul>
+</div>

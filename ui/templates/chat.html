@@ -1,50 +1,46 @@
 {% extends "base.html" %}
 
-{% block title %}Peer Chat{% endblock %}
+{% block title %}PeerChat UI{% endblock %}
 
 {% block content %}
-<section class="chat-card">
-  <header class="chat-header">
-    <div>
-      <p class="eyebrow">PeerChat</p>
-      <h1>
-        {% if selected_user %}
-          Chat with {{ selected_user }}
-        {% else %}
-          Chat interface skeleton
-        {% endif %}
-      </h1>
-    </div>
-  </header>
-
-  <section id="message-stream" class="message-stream" aria-live="polite">
-    {% include "partials/message_list.html" %}
-  </section>
-
-  <form
-    id="composer-form"
-    class="composer"
-    hx-post="{{ url_for('post_message') }}"
-    hx-target="#message-stream"
-    hx-swap="innerHTML"
-  >
-    <input type="hidden" name="user" value="{{ selected_user }}" />
-    <label class="sr-only" for="message">Message</label>
-    <textarea id="message" name="message" rows="3" placeholder="Write a message..."></textarea>
-    <div class="composer-actions">
-      <p class="hint">Enter a message to simulate the chat flow.</p>
-      <button type="submit">Send</button>
-    </div>
-  </form>
+<!-- Top connection bar -->
+<section class="connection-bar">
+  {% include "partials/connect_state.html" with context %}
 </section>
+
+<!-- Main layout: left users box, right chat window -->
+<div class="main-grid">
+  <aside id="users-box" class="users-box">
+    {% include "partials/users_list.html" %}
+  </aside>
+
+  <section class="chat-card">
+    <section id="message-stream" class="message-stream" aria-live="polite">
+      {% include "partials/message_list.html" %}
+    </section>
+
+    <form
+      id="composer-form"
+      class="composer"
+      hx-post="{{ url_for('post_message') }}"
+      hx-target="#message-stream"
+      hx-swap="innerHTML"
+    >
+      <label class="sr-only" for="message">Message</label>
+      <textarea id="message" name="message" rows="3" placeholder="Write a message..."></textarea>
+      <div class="composer-actions">
+        <p class="hint">Enter a message to simulate the chat flow.</p>
+        <button type="submit">Send</button>
+      </div>
+    </form>
+  </section>
+</div>
 
 <script>
   (() => {
     const composerForm = document.getElementById("composer-form");
     const messageInput = document.getElementById("message");
-    const selectedUserInput = composerForm?.querySelector('input[name="user"]');
-    const selectedUser = selectedUserInput?.value?.trim() ?? "";
-    const draftStorageKey = `peerchat:draft:${selectedUser}`;
+    const draftStorageKey = `peerchat:draft`;
     const hasStorage = typeof window.localStorage !== "undefined";
 
     if (!composerForm || !messageInput) {
@@ -52,35 +48,22 @@
     }
 
     const saveDraft = () => {
-      if (!hasStorage || !selectedUser) {
-        return;
-      }
-
+      if (!hasStorage) return;
       if (messageInput.value) {
         window.localStorage.setItem(draftStorageKey, messageInput.value);
         return;
       }
-
       window.localStorage.removeItem(draftStorageKey);
     };
 
     const restoreDraft = () => {
-      if (!hasStorage || !selectedUser) {
-        return;
-      }
-
+      if (!hasStorage) return;
       const savedDraft = window.localStorage.getItem(draftStorageKey);
-
-      if (savedDraft) {
-        messageInput.value = savedDraft;
-      }
+      if (savedDraft) messageInput.value = savedDraft;
     };
 
     const clearDraft = () => {
-      if (!hasStorage || !selectedUser) {
-        return;
-      }
-
+      if (!hasStorage) return;
       window.localStorage.removeItem(draftStorageKey);
     };
 
@@ -144,5 +127,45 @@
       messageInput.focus();
     });
   })();
+</script>
+<script>
+  // Toggle the connect form state after HTMX requests to /connect or /disconnect
+  document.addEventListener('htmx:afterRequest', (evt) => {
+    try {
+      const frm = evt.target;
+      if (!(frm instanceof HTMLElement)) return;
+      if (!frm.classList || !frm.classList.contains('connect-form')) return;
+      if (!evt.detail || !evt.detail.path) return;
+
+      const path = evt.detail.path;
+      const usernameInput = frm.querySelector('input[name="username"]');
+      const ipInput = frm.querySelector('input[name="ip"]');
+      const submit = frm.querySelector('button[type="submit"]');
+
+      if (path && path.indexOf('/connect') !== -1 && evt.detail.successful) {
+        if (usernameInput) usernameInput.setAttribute('readonly', '');
+        if (ipInput) ipInput.setAttribute('readonly', '');
+        if (submit) {
+          submit.textContent = 'Disconnect';
+          // change form to post to /disconnect on next submit
+          frm.setAttribute('hx-post', '{{ url_for("disconnect") }}');
+          frm.action = '{{ url_for("disconnect") }}';
+        }
+      }
+
+      if (path && path.indexOf('/disconnect') !== -1 && evt.detail.successful) {
+        if (usernameInput) usernameInput.removeAttribute('readonly');
+        if (ipInput) ipInput.removeAttribute('readonly');
+        if (submit) {
+          submit.textContent = 'Connect';
+          frm.setAttribute('hx-post', '{{ url_for("connect") }}');
+          frm.action = '{{ url_for("connect") }}';
+        }
+      }
+    } catch (e) {
+      // fail silently — UI behavior is non-critical
+      console.error(e);
+    }
+  });
 </script>
 {% endblock %}

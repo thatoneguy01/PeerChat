@@ -13,12 +13,13 @@ def create_app() -> Flask:
         "MOCK_DATA_ENABLED",
         os.getenv("MOCK_RESPONSES_ENABLED", "true"),
     )
-    app.config["MOCK_DATA_ENABLED"] = mock_data_enabled.strip().lower() == "true"
-    chat_service = create_chat_service(app.config["MOCK_DATA_ENABLED"])
+    app.config["MOCK_DATA_ENABLED"] = mock_data_enabled.strip().lower() == "false"
+    chat_service = create_chat_service(app.config["MOCK_DATA_ENABLED"], refreshes={"users": lambda users: render_template("partials/users_list.html", users=users), "messages": lambda messages: render_template("partials/message_list.html", messages=messages)})
+    app.chat_service = chat_service
 
     @app.get("/")
     def index() -> str:
-        return render_template("users.html", users=chat_service.get_users())
+        return render_template("chat.html", users=chat_service.get_users(), messages=chat_service.get_messages())
 
     @app.get("/users")
     def user_list() -> str:
@@ -28,30 +29,47 @@ def create_app() -> Flask:
     def favicon() -> object:
         return send_from_directory(app.static_folder, "assets/favicon.svg", mimetype="image/svg+xml")
 
-    @app.get("/chat")
-    def chat_room() -> str:
-        selected_user = request.args.get("user", "").strip()
+    @app.get("/users/partial")
+    def users_partial() -> str:
+        # Render the small users partial used inside the chat UI aside.
+        users = chat_service.get_users()
+        return render_template("partials/users_list.html", users=users)
+
+    def render_connect_state(connected: bool, username: str = "", ip: str = "") -> str:
         return render_template(
-            "chat.html",
-            messages=chat_service.get_messages(selected_user),
-            selected_user=selected_user,
+            "partials/connect_state.html",
+            connected=connected,
+            username=username,
+            ip=ip,
         )
+
+    def render_users_and_connect_state(connected: bool, username: str = "", ip: str = "") -> str:
+        users_html = render_template("partials/users_list.html", users=chat_service.get_users())
+        connect_html = render_connect_state(connected=connected, username=username, ip=ip)
+        return users_html + connect_html
+
+    @app.post("/connect")
+    def connect() -> str:
+        username = request.form.get("username", "").strip()
+        ip = request.form.get("ip", "").strip()
+        chat_service.connect(username)
+        return render_users_and_connect_state(connected=True, username=username, ip=ip)
+
+    @app.post("/disconnect")
+    def disconnect() -> str:
+        username = request.form.get("username", "").strip()
+        if username:
+            chat_service.user_disconnected(username)
+        return render_users_and_connect_state(connected=False)
 
     @app.post("/messages")
     def post_message() -> str:
         content = request.form.get("message", "").strip()
-        selected_user = request.form.get("user", "").strip()
 
         if not content:
-            return render_template(
-                "partials/message_list.html",
-                messages=chat_service.get_messages(selected_user),
-            )
+            return render_template("partials/message_list.html", messages=chat_service.get_messages())
 
-        chat_service.post_user_message(selected_user, content)
-        return render_template(
-            "partials/message_list.html",
-            messages=chat_service.get_messages(selected_user),
-        )
+        chat_service.post_message(content)
+        return render_template("partials/message_list.html", messages=chat_service.get_messages())
 
     return app
