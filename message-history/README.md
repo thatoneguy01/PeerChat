@@ -667,6 +667,13 @@ Part 1: Emtpry node join and history recovery (Node 3)
 17. Send a new live chat message from node2.
 18. Verify node1, node2, and node3 all persist the new live message.
 
+The table to show the expected message history on each node at the end of each step:
+| Step | Node 1 History       | Node 2 History       | Node 3 History       |
+| ---- | -------------------- | -------------------- | -------------------- |
+| 5    | Msg1(sender: Node 1), Msg2(Sender: Node 1), Msg3 (sender: Node 2)    | Msg1, Msg2, Msg3    |                      |
+| 14   | Msg1, Msg2, Msg3    | Msg1, Msg2, Msg3    | Msg1, Msg2, Msg3    |
+| 18   | Msg1, Msg2, Msg3, Msg4(Sender: Node 2) | Msg1, Msg2, Msg3, Msg4| Msg1, Msg2, Msg3, Msg4 | Msg1, Msg2, Msg3, Msg4 | 
+
 Part 2: Node returns after being offline and recovers missed history (Node 2)
 1. Stop node2's `BroadcastNode` server to simulate going offline.
 2. Send several live chat messages from node1 to node 3 while node2 is offline. 
@@ -685,9 +692,9 @@ Part 2: Node returns after being offline and recovers missed history (Node 2)
 The table to show the expected message history on each node at the end of each step:
 | Step | Node 1 History       | Node 2 History       | Node 3 History       |
 | ---- | -------------------- | -------------------- | -------------------- |
-| 5    | Msg1(sender: Node 1), Msg2(Sender: Node 1), Msg3 (sender: Node 2)    | Msg1, Msg2, Msg3    |                      |
-| 14   | Msg1, Msg2, Msg3    | Msg1, Msg2, Msg3    | Msg1, Msg2, Msg3    |
-| 18   | Msg1, Msg2, Msg3, Msg4(Sender: Node 3) | | Msg1, Msg2, Msg3, Msg4 | Msg1, Msg2, Msg3, Msg4 | 
+| 2    | Msg1(sender: Node 1), Msg2(Sender: Node 1), Msg3 (sender: Node 2), Msg4 (sender: Node 2)   | Msg1, Msg2, Msg3, Msg4    | Msg1, Msg2, Msg3, Msg4    |
+| 3    | Msg1, Msg2, Msg3, Msg4, Msg5(sender: Node 1), Msg6(sender: Node 3), Msg7(sender: Node 1)    | Msg1, Msg2, Msg3, Msg4 (offline)   | Msg1, Msg2, Msg3, Msg4, Msg5, Msg6, Msg7    |
+| 10   | Msg1, Msg2, Msg3, Msg4, Msg5, Msg6, Msg7    | Msg1, Msg2, Msg3, Msg4, Msg5, Msg6, Msg7    | Msg1, Msg2, Msg3, Msg4, Msg5, Msg6, Msg7    |
 
 Part 3: Snapshot creation and recovery
 1. Send enough live messages from node1 to trigger snapshot creation (e.g. 10 messages).
