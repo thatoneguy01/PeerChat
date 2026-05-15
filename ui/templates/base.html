@@ -29,6 +29,10 @@
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   </head>
   <body>
+    <div class="brand-mark" aria-hidden="true">
+      <img class="brand-mark-icon" src="{{ url_for('static', filename='assets/favicon.svg') }}" alt="">
+      <span class="brand-mark-text">Peer Chat</span>
+    </div>
     <main class="page-shell">
       {% block content %}{% endblock %}
     </main>
