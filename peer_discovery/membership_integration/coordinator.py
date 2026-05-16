@@ -239,7 +239,8 @@ class MembershipCoordinator:
         """Periodic maintenance: drive presence failure detection and
         enforce backfill timeouts.
 
-        Person C wires this into a scheduler (e.g., asyncio loop every ~1s).
+        Wired into a repeating daemon-thread timer by
+        ``MembershipService.start_tick_scheduler()``.
         """
         self._presence.check_liveness()
         self._sweep_backfill_timeouts()
