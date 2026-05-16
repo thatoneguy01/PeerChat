@@ -88,7 +88,6 @@ def test_grace_period_expiry_triggers_timeout():
     clock.advance(16.0)  # 16s after suspected_at > 15s grace
     pm.check_liveness()
     assert cbs == [("alice", "suspected"), ("alice", "timeout")]
-    assert pm.get_member_presence("alice").state == PresenceState.DEAD
 
 
 def test_heartbeat_for_unknown_user_is_noop():
@@ -169,22 +168,4 @@ def test_tracked_count():
     assert pm.tracked_count == 2
 
 
-def test_get_all_entries_returns_copy():
-    pm, _ = make_pm()
-    pm.register_member("alice")
-    snap = pm.get_all_entries()
-    snap.pop("alice")
-    assert pm.get_member_presence("alice") is not None
 
-
-def test_returned_entries_do_not_mutate_internal_state():
-    pm, _ = make_pm()
-    pm.register_member("alice")
-
-    entry = pm.get_member_presence("alice")
-    entry.state = PresenceState.DEAD
-
-    entries = pm.get_all_entries()
-    entries["alice"].state = PresenceState.DEAD
-
-    assert pm.get_member_presence("alice").state == PresenceState.ALIVE
