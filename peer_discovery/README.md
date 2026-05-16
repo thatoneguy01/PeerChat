@@ -2,7 +2,7 @@
 
 **SJSU CMPE 275 Enterprise Applications | Final Project**
 
-This module implements the **Peer Discovery and Membership** component of the class's peer-to-peer distributed chat system. The service acts as the central control plane for room membership, following a log-centric architecture inspired by systems like Raft, ZooKeeper, and Kafka.
+This module implements the **Peer Discovery and Membership** component of the class's peer-to-peer distributed chat system. The service acts as the central control plane for room membership, securely coordinating state across all distributed peers in the network.
 
 ---
 
@@ -16,7 +16,7 @@ The core philosophy is **complex coordination hidden behind a small API**. The s
 A member goes through several states during their time in the room:
 `JOINING` → `BACKFILLING` → `ACTIVE` → `LEAVING` → `LEFT`
 
-If an active member fails to send heartbeats, they enter a `SUSPECTED` state (a grace period). If they recover in time by sending a heartbeat, they return to `ACTIVE` without disruption. If they do not recover before the grace period ends, they become `DISCONNECTED`.
+The system is powered by an **Idempotent Event Machine** over a **Gossip Network**. If an active member fails to send heartbeats, they enter a `SUSPECTED` state (a grace period). If they recover in time by sending a heartbeat, they return to `ACTIVE` without disruption. If they do not recover before the grace period ends, they become `DISCONNECTED`.
 
 ---
 
@@ -25,116 +25,78 @@ If an active member fails to send heartbeats, they enter a `SUSPECTED` state (a 
 ```text
 peer_discovery/
 ├── membership/                 # Core membership data models and state
-│   ├── duplicate_guard.py      # Idempotency filter
-│   ├── durability.py           # Snapshot and log persistence
 │   ├── event_log.py            # Append-only sequence of MembershipEvents
 │   ├── models.py               # Data models (MembershipEvent, MemberState, etc.)
 │   └── snapshot.py             # Materialized view of current membership
-├── membership_integration/     # External facing components
+├── membership_integration/     # External facing components (Local API)
 │   ├── coordinator.py          # Authoritative writer for mutations
 │   ├── notifier.py             # ZooKeeper-style event subscriptions
-│   ├── service.py              # MembershipService — the public API facade
-│   └── tracer.py               # Dapper-style lifecycle observability
+│   └── service.py              # MembershipService — the public API facade
+├── network/                    # P2P Network Layer
+│   ├── bootstrap.py            # Node joining and encrypted state transfer
+│   ├── crypto_provider.py      # Hybrid RSA/AES-GCM encryption
+│   ├── discovery_node.py       # Distributed wrapper around the local service
+│   ├── framing.py              # TCP length-prefixed framing
+│   ├── gossip.py               # LRU-bounded event broadcasting
+│   └── heartbeat.py            # Network liveness pings
 ├── docs/                       # Architecture & Integration Guides
-│   ├── OverallArchitechture.md # Deep dive into the distributed systems concepts
-│   └── workstream_d_external_integration.md # Integration contract tests and instructions
-├── membership/tests/           # Core unit tests (snapshot, log, models, replay, durability)
-├── membership_integration/tests/ # Integration tests (coordinator, service, notifier, tracer)
 └── README.md
 ```
 
 ---
 
-## Setup
+## Setup & Running
 
-**Requirements:** Python 3.11+
+**Requirements:** Python 3.11+ and `cryptography` library.
 
-Ensure the module is in your Python path to import components from `membership` and `membership_integration`.
-
----
-
-## Running the Tests
-
+**Running a Node from CLI:**
 ```bash
-pytest membership/tests/ -v
-pytest membership_integration/tests/ -v
+# Launch a seed node
+python -m peer_discovery.network --port 5000 --advertise 127.0.0.1:5000 --room my-room --name Seed
+
+# Join the network
+python -m peer_discovery.network --port 5001 --advertise 127.0.0.1:5001 --room my-room --bootstrap 127.0.0.1:5000 --name Node2
 ```
 
-Two main test suites:
-
-| Suite | What it covers |
-|---|---|
-| `membership/tests/` | Event log ordering, Snapshot state machine transitions, DuplicateGuard window, and Snapshot recovery (`test_durability.py`, `test_replay.py`). |
-| `membership_integration/tests/` | Coordinator logic, `EventNotifier` dispatch behavior, `JoinLifecycleTracer` spans, and `MembershipService` facade integration. |
+**Running the Tests:**
+```bash
+pytest peer_discovery/ -v
+```
 
 ---
 
-## Public API
+## The Network Layer
 
-### `MembershipService`
+The `peer_discovery.network` package wraps the local `MembershipService` into a fully distributed P2P node (`DiscoveryNode`).
+
+1. **Transport & Framing**: Thread-per-connection TCP server with strict 64KB framing and 30-second timeouts.
+2. **Hybrid Cryptography**: All join payloads and snapshots are encrypted. A joining node provides an RSA-2048 public key, and the seed node encrypts the `SNAPSHOT_RESPONSE` using an ephemeral AES-256-GCM key wrapped by the RSA key.
+3. **Gossip Protocol**: State mutations are broadcast across the network. Cyclical gossip is prevented using a 10,000-entry `seen_event_ids` LRU cache.
+4. **Heartbeats**: The `HeartbeatManager` continuously pings known peers, feeding liveness data into the local `PresenceManager`.
+
+---
+
+## Local API Integration
+
+The `MembershipService` facade provides local teams with an easy O(1) API.
 
 ```python
 from membership_integration.service import MembershipService
 
+# Optional: wrap with DiscoveryNode for P2P routing
 service = MembershipService(room_id="my-room")
 
-# 1. Join a member
-result = service.join_member(user_id="alice", display_name="Alice")
+# 1. Join a member (accepts cryptographic context)
+result = service.join_member(user_id="alice", display_name="Alice", public_key=b"...")
 
-# 2. Leave a member voluntarily
-service.leave_member(user_id="alice")
-
-# 3. Send a liveness heartbeat
-service.heartbeat_member(user_id="alice")
-
-# 4. Get a fast read of current state
+# 2. Get a fast read of current state
 snapshot = service.get_membership_snapshot()
 
-# 5. Subscribe to membership events
-def on_event(event, delta):
-    print(f"Event: {event.event_type} for {event.user_id}")
+# 3. Subscribe to network events
 handle = service.subscribe_membership_events(on_event)
-
-# 6. Signal backfill start (used by History Team)
-service.start_history_backfill(user_id="alice")
-
-# 7. Signal backfill complete (used by History Team)
-service.complete_history_backfill(user_id="alice")
 ```
 
-| Method | Purpose |
-|---|---|
-| `join_member(user_id, name)` | Request to join the room. Returns `JoinResult`. |
-| `leave_member(user_id)` | Voluntary leave. Appends `LEAVE_REQUESTED` and `LEAVE_CONFIRMED`. |
-| `heartbeat_member(user_id)` | Periodic liveness signal from a connected peer. |
-| `get_membership_snapshot()` | Fast read: returns current members, their states, and membership version. |
-| `subscribe_membership_events()` | Watch-style subscription for membership change notifications. |
-| `start_history_backfill()` | Signal from history team: backfill has begun for this user. |
-| `complete_history_backfill()`| Signal from history team: backfill is done, user becomes `ACTIVE`. |
-
----
-
-## Integration with Other Teams
-
-Short version below. Full contracts and guides live in `docs/workstream_d_external_integration.md`.
-
-### Message Distribution Team
-
-- Call `get_membership_snapshot()` on startup to initialize your routing table.
-- Call `subscribe_membership_events()` to listen for `MEMBER_JOINED` (add to fanout) and `LEAVE_CONFIRMED` / `DISCONNECT_TIMEOUT` (remove from fanout).
-- **Important:** Only route messages to members in the `ACTIVE` state. Do not route to members who are still `BACKFILLING`.
-
-### Message History Team
-
-- Subscribe to events to detect when a member joins (`JOIN_ACCEPTED`).
-- Call `start_history_backfill(user_id)` before you begin replaying message history to the new member.
-- Once replay is done, call `complete_history_backfill(user_id)`. The member will then transition to `ACTIVE` and be ready to receive live messages.
-
-### Security Team
-
-- Register a join validator hook (if supported by the service instance) to approve or reject join requests based on authorization or bans.
-- Subscribe to events for audit logging (e.g., capturing `JOIN_ACCEPTED` and `LEAVE_CONFIRMED`).
-- Call `leave_member(user_id)` to forcibly eject a user when necessary.
+*(See `team_integration_guide.md` for full instructions for the Distribution, History, and Security teams.)*
 
 ---
 
@@ -143,29 +105,11 @@ Short version below. Full contracts and guides live in `docs/workstream_d_extern
 | Guarantee | Reality |
 |---|---|
 | Single Source of Truth | Yes — The `MembershipEventLog` acts as the unquestionable append-only ledger of state changes. |
+| Cryptographic Security | Yes — Joins are validated with RSA, and snapshots are encrypted with AES-GCM. |
 | Deterministic State | Yes — The `MembershipSnapshot` is a materialized view derived strictly by applying the event log in order. |
 | Event Notifications | Yes — Subscribers are notified sequentially of valid membership transitions via `EventNotifier`. |
 | Fast Local Reads | Yes — `get_membership_snapshot()` provides an O(1) in-memory lookup. |
-| Resilience to Stale Reads | Yes — Version numbers are attached to snapshots and updates to guard against out-of-order processing. |
-
----
-
-## Design Decisions
-
-| Decision | Rationale |
-|---|---|
-| **Control-Plane Focus** | The membership service isolates complex peer state (alive, suspected, backfilling) from high-throughput data-plane tasks (message routing). |
-| **Append-Only Log** | Modeled after Kafka/Raft. Makes it trivial to reconstruct state, build new materialized views, and debug past issues by replaying events. |
-| **Suspect-Before-Dead (SWIM)** | Traditional heartbeat timeouts cause churn. Adding a `SUSPECTED` grace period reduces false positives for peers experiencing transient GC pauses or network blips. |
-| **Dapper-Style Tracing** | Attaching `trace_id`s to the join lifecycle (which spans multiple teams) makes it possible to debug exactly where a join request stalled. |
-| **ZooKeeper-Style Watches** | Consumers register callbacks for events instead of polling `get_membership_snapshot()`, reducing unnecessary overhead and keeping systems in sync. |
-
----
-
-## Known Limitations
-
-- **Centralized Coordinator:** In its current phase, the `MembershipCoordinator` handles all mutations, making it a single point of failure. Phase 5 plans address this via Raft-style leader election.
-- **In-Memory State:** Large room sizes could bloat the `MembershipSnapshot`. State persistence relies on `durability.py` snapshots.
+| P2P Resilience | Yes — State is replicated via Gossip, and duplicate frames are safely ignored. |
 
 ---
 
@@ -174,6 +118,6 @@ Short version below. Full contracts and guides live in `docs/workstream_d_extern
 | Member | Contribution |
 |---|---|
 | Himanshu | Event Log and Snapshot functionality |
-| Ali (work pending) | Durability, Idempotency, and core models |
+| Ali | Durability, Idempotency, and core models |
 | Abhishek | Coordinator, Tracing, Notifier, and public Service Facade |
-| Asim (work pending) | External Integration (Message Distribution, History, Security) |
+| Asim | P2P Network Layer (Transport, Gossip, Bootstrap, Heartbeats, Crypto) |
