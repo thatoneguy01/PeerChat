@@ -160,17 +160,24 @@ TODO
 ### 6.4 Anukrithi
 
 **Main work:**  
-I worked on duplicate suppression, loop prevention, and the direct-send path that History needed for recovery. My focus was making sure that as messages flood through the peer network, each node processes a message only once and does not accidentally create a broadcast storm.
+I worked on the parts that I pushed to the main repo: duplicate suppression behavior, loop-prevention behavior, tests for those cases, the direct-send API that History needed for recovery chunks, and a small root-pytest fix. My focus was making sure that as messages flood through the peer network, each node processes a message only once and does not accidentally create a broadcast storm.
 
-The first part was duplicate suppression. In a peer-to-peer broadcast, the same message can reach a node from multiple neighbors. That is normal and not automatically an error, but it becomes a bug if the node stores it twice, shows it twice in the UI, or forwards it again. I added an atomic `deduplicate(msg_id)` check in `BroadcastNode`. It checks whether a message ID has already been seen and marks it as seen under the same lock. That matters because two incoming network tasks could otherwise race each other and both think the message is new.
+The first part was duplicate suppression. In a peer-to-peer broadcast, the same message can reach a node from multiple neighbors. That is normal and not automatically an error, but it becomes a bug if the node stores it twice, shows it twice in the UI, or forwards it again. I updated and tested the `BroadcastNode` behavior so a duplicate message ID is dropped before it is delivered or forwarded again.
 
-The second part was loop prevention. Duplicate suppression handles repeated message IDs, but I also added TTL behavior as a second safety net. A message with `ttl == 0` is allowed to be delivered locally, but it is not forwarded again. When a node does forward a message, it forwards a copy with TTL decremented. This prevents a cyclic peer graph from circulating messages forever.
+The second part was loop prevention. Duplicate suppression handles repeated message IDs, but TTL gives us a second safety net. A message with `ttl == 0` is allowed to be delivered locally, but it is not forwarded again. When a node does forward a message, it forwards a copy with TTL decremented. I added tests for this because a small mutation bug here could make the delivered message look different from what the upper layers expected.
 
 The third part was supporting History recovery. At first, History was using a workaround where recovery chunks could be sent through broadcast with a target-user filter. That technically works, but it wastes network traffic because every peer receives chunks that only one recovering peer needs. I added/validated `send_to_peer(host, port, message)` so History can send recovery chunks directly to one peer. The direct-send path forces `ttl=0`, which means the receiver can save the chunk locally without re-broadcasting old history to everyone.
 
-I also worked on the integration side of this. When History reported that a recovering node could get old messages but later stop receiving live messages, the important clue was that direct recovery was working but live broadcast was getting stuck. That pointed us toward the causal-ordering/vector-clock path instead of the basic WebSocket path. The fix was to sync Distribution's vector clock after History recovery completes, then drain messages that were waiting in the holdback queue.
+I also cleaned up an early placeholder folder. I had first created a separate `message_distribution` folder while trying to organize my work locally. Once the repo standardized on the existing `distribution/` package, I removed that placeholder so the repo would not have two confusing locations for the same module.
 
 Finally, I fixed a repo-level testing issue. Message History tests passed when run inside `message-history`, but root `pytest` failed because those tests import `storage` as a local package. I added a small `conftest.py` inside `message-history/tests` so root pytest adds the message-history folder to `sys.path`. This is not a feature change, but it matters because the whole class needs one command that tests the full repo.
+
+The main commits I am counting for my section are:
+
+- `7c4b5f3` — added deduplication and loop-prevention tests and related BroadcastNode behavior updates
+- `71ddb01` — added direct peer send for History replay, plus docs and tests
+- `7d2efa1` — removed the old placeholder `message_distribution` folder
+- `ea6948a` — fixed root pytest for Message History tests and added this report draft
 
 **Tests / validation:**  
 I added and ran tests around the behavior I changed:
@@ -196,14 +203,14 @@ I added and ran tests around the behavior I changed:
 3. **History recovery was too noisy if implemented as broadcast.**  
    Sending old chunks through broadcast would turn one recovering node's catch-up into traffic for every peer. The fix was a direct peer-send API. This reduces recovery traffic from "everyone sees every recovery chunk" to "only the recovering node receives its chunks."
 
-4. **Recovery could leave live causal state behind.**  
-   Recovery writes older messages into History, but Distribution also keeps a vector clock for live causal delivery. If those two states disagree, live messages can sit in holdback even though History already caught up. The fix was to sync the vector clock after recovery and release any now-ready held messages.
+4. **The repo briefly had a confusing extra folder.**  
+   I initially had a separate `message_distribution` placeholder while figuring out where my work should live. After the team standardized on `distribution/`, I removed the placeholder so future code and docs point to one place.
 
 5. **Root tests failed even though module tests passed.**  
    This was a packaging/path issue, not a logic bug. The fix was a local pytest `conftest.py` for Message History tests so root-level pytest sees the local `storage` package.
 
 **What I learned:**  
-The biggest thing I learned is that distributed bugs are often not loud. The program can keep running and still be wrong: duplicate messages can look like normal traffic, loops can look like retries, and recovery can appear successful while live delivery is quietly stuck behind causal metadata.
+The biggest thing I learned is that distributed bugs are often not loud. The program can keep running and still be wrong: duplicate messages can look like normal traffic, loops can look like retries, and recovery traffic can look harmless until it gets multiplied across every peer.
 
 I also learned that the API boundary matters a lot. `broadcast()` and `send_to_peer()` seem like small differences, but they represent totally different network behavior. Broadcast is right for live chat. Direct send is right for recovery. Mixing them makes the system harder to reason about and creates unnecessary load.
 
