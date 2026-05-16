@@ -28,14 +28,14 @@ class InMemoryRegistry(PeerRegistry):
     """
 
     def __init__(self) -> None:
-        self._peers: List[Tuple[str, int]] = []
+        self._peers: List[Tuple[str, int, str]] = []
 
-    def add_peer(self, host: str, port: int) -> None:
+    def add_peer(self, host: str, port: int, pub_key: str) -> None:
         if (host, port) not in self._peers:
-            self._peers.append((host, port))
+            self._peers.append((host, port, pub_key))
 
     def remove_peer(self, host: str, port: int) -> None:
-        self._peers = [(h, p) for h, p in self._peers if (h, p) != (host, port)]
+        self._peers = [(h, p, pub) for h, p, pub in self._peers if (h, p) != (host, port)]
 
     def get_peers(self) -> List[Tuple[str, int]]:
         return list(self._peers)
