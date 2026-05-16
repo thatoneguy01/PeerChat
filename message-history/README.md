@@ -643,6 +643,7 @@ node3 = 127.0.0.1:6003
 ```
 
 #### Flow
+Part 1: Emtpry node join and history recovery (Node 3)
 
 1. Start `MembershipService`.
 2. Start `BroadcastNode` servers for node1 and node2.
@@ -654,8 +655,8 @@ node3 = 127.0.0.1:6003
 8. Register node3 with Membership.
 9. Verify node3 is `JOINING` or `BACKFILLING`, not `ACTIVE`.
 10. Call `start_history_backfill(node3)`.
-11. Have node3 send a `recover_request` to one `ACTIVE` provider, such as node1.
-12. Have node1 handle the `recover_request`, read snapshots plus active log,
+11. Have node3 send a `recover_request` to all `ACTIVE` providers, such as node1 and 2.
+12. Have node1/2 handle the `recover_request`, read snapshots plus active log,
     filter by node3's `have_vector_clock`, and stream `history_chunk` messages
     back to node3 using `send_to_peer()`.
 13. Have node3 handle each `history_chunk` and persist recovered messages with
@@ -665,6 +666,47 @@ node3 = 127.0.0.1:6003
 16. Verify node3 becomes `ACTIVE`.
 17. Send a new live chat message from node2.
 18. Verify node1, node2, and node3 all persist the new live message.
+
+The table to show the expected message history on each node at the end of each step:
+| Step | Node 1 History       | Node 2 History       | Node 3 History       |
+| ---- | -------------------- | -------------------- | -------------------- |
+| 5    | Msg1(sender: Node 1), Msg2(Sender: Node 1), Msg3 (sender: Node 2)    | Msg1, Msg2, Msg3    |                      |
+| 14   | Msg1, Msg2, Msg3    | Msg1, Msg2, Msg3    | Msg1, Msg2, Msg3    |
+| 18   | Msg1, Msg2, Msg3, Msg4(Sender: Node 2) | Msg1, Msg2, Msg3, Msg4| Msg1, Msg2, Msg3, Msg4 | Msg1, Msg2, Msg3, Msg4 | 
+
+Part 2: Node returns after being offline and recovers missed history (Node 2)
+1. Stop node2's `BroadcastNode` server to simulate going offline.
+2. Send several live chat messages from node1 to node 3 while node2 is offline. 
+3. Start node2's `BroadcastNode` server again.
+4. Verify node2 is `JOINING` or `BACKFILLING`, not `ACTIVE`.
+5. Call `start_history_backfill(node2)`.
+6. Have node2 send a `recover_request` to all `ACTIVE` providers, such as node1 and 3.
+7. Have node1/3 handle the `recover_request`, read snapshots plus active log, filter by node2's `have_vector_clock`, and stream `history_chunk` messages back to node2 using `send_to_peer()`.
+8. Have node2 handle each `history_chunk` and persist recovered messages with `save_many()`.
+9. Verify node2 now has the historical messages sent while it was offline.
+10. Call `complete_history_backfill(node2)`.
+11. Verify node2 becomes `ACTIVE`.
+12. Send a new live chat message from node1.
+13. Verify node1, node2, and node3 all persist the new live message.
+
+The table to show the expected message history on each node at the end of each step:
+| Step | Node 1 History       | Node 2 History       | Node 3 History       |
+| ---- | -------------------- | -------------------- | -------------------- |
+| 2    | Msg1(sender: Node 1), Msg2(Sender: Node 1), Msg3 (sender: Node 2), Msg4 (sender: Node 2)   | Msg1, Msg2, Msg3, Msg4    | Msg1, Msg2, Msg3, Msg4    |
+| 3    | Msg1, Msg2, Msg3, Msg4, Msg5(sender: Node 1), Msg6(sender: Node 3), Msg7(sender: Node 1)    | Msg1, Msg2, Msg3, Msg4 (offline)   | Msg1, Msg2, Msg3, Msg4, Msg5, Msg6, Msg7    |
+| 10   | Msg1, Msg2, Msg3, Msg4, Msg5, Msg6, Msg7    | Msg1, Msg2, Msg3, Msg4, Msg5, Msg6, Msg7    | Msg1, Msg2, Msg3, Msg4, Msg5, Msg6, Msg7    |
+
+Part 3: Snapshot creation and recovery
+1. Send enough live messages from node1 to trigger snapshot creation (e.g. 10 messages).
+2. Verify node1 creates a snapshot and compacts the active log.
+3. Stop node3's `BroadcastNode` server to simulate going offline.
+4. Send several live chat messages from node1 to node 2 while node3 is offline. 
+5. Start node3's `BroadcastNode` server again.
+6. Verify node3 is `JOINING` or `BACKFILLING`, not `ACTIVE`.
+7. Call `start_history_backfill(node3)`.
+8. Have node3 send a `recover_request` to all `ACTIVE` providers, such as node1 and 2.
+9. Have node1/2 handle the `recover_request`,read snapshots plus active log, filter by node3's `have_vector_clock`, and stream `snapshot_chunk` messages for the snapshot plus `history_chunk` messages for newer active-log messages back to node3 using `send_to_peer()`.
+10. Have node3 handle each `snapshot_chunk` and `history_chunk`, persist recovered messages with `save_many()`, and verify the snapshot messages are not stored as normal chat messages.
 
 #### Assertions
 

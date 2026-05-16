@@ -107,6 +107,26 @@ class BroadcastNode:
                 self._send_to_peer(host, port, message), self._loop
             )
 
+    def sync_vector_clock(self, vc: dict) -> None:
+        """
+        Advance the local vector clock to at least the values in vc, then drain
+        any hold-back queue entries that are now causally ready.
+
+        Call this after history recovery completes so the causal layer is not
+        blocked by messages that were replayed through the recovery path rather
+        than received via live broadcast.
+
+        Thread-safe: schedules the update on the asyncio event loop.
+        """
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(self._apply_vc_sync(vc), self._loop)
+
+    async def _apply_vc_sync(self, vc: dict) -> None:
+        self._vc.merge(vc)
+        for msg in self._hold_back.drain(self._vc):
+            if self.on_message:
+                self.on_message(msg)
+
     def deduplicate(self, msg_id: str) -> bool:
         """
         Atomically check-and-mark a message ID as seen.
@@ -169,7 +189,7 @@ class BroadcastNode:
             to_deliver = [message] + self._hold_back.drain(self._vc)
         else:
             self._hold_back.add(message)
-            to_deliver = []
+            to_deliver = self._hold_back.drain(self._vc)
 
         for msg in to_deliver:
             if self.on_message:

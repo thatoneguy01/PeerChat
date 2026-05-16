@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Peer Chat{% endblock %}
+
+{% block content %}
+<section class="chat-card users-card">
+  <header class="chat-header">
+    <div>
+      <p class="eyebrow">PeerChat</p>
+      <h1>User list</h1>
+    </div>
+    <p class="subtitle">See who is available before entering the chat room.</p>
+  </header>
+
+  <section class="user-list" aria-label="Users">
+    {% for user in users %}
+      <a class="user-row" href="{{ url_for('chat_room', user=user.name) }}">
+        <p class="user-name">{{ user.name }}</p>
+        <span class="user-status">{{ user.status }}</span>
+      </a>
+    {% endfor %}
+  </section>
+</section>
+{% endblock %}
