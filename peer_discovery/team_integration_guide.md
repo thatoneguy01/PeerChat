@@ -36,7 +36,7 @@ from membership_service import MembershipService
 service = MembershipService()
 
 # Mutating operations (used by client-facing code and internal lifecycle)
-service.join_member(user_id, display_name) -> JoinResult
+service.join_member(user_id, display_name, public_key=None, context=None) -> JoinResult
 service.leave_member(user_id) -> None
 service.heartbeat_member(user_id) -> None
 
@@ -78,6 +78,7 @@ class MemberInfo:
     joined_at: float      # Unix timestamp of when they joined
     last_heartbeat: float # Unix timestamp of last liveness signal
     membership_version: int  # Increments on every state change
+    public_key: bytes | None = None  # RSA public key for message encryption
 ```
 
 ### The MembershipSnapshot Object
@@ -107,6 +108,9 @@ class MembershipEvent:
     membership_version: int # Snapshot version after this event
     source: str             # Which component produced this event
     trace_id: str | None    # Optional tracing correlation ID
+    term: int = 0           # Monotonic leader term
+    originator: str = ""    # Node that generated the event (for gossip dedup)
+    public_key: bytes | None = None # RSA public key (on JOIN_ACCEPTED)
 ```
 
 ### Event Types
