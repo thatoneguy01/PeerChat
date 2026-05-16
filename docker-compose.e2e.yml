@@ -1,0 +1,38 @@
+# Optional: run three peers as isolated containers (Docker Compose ≈ local k8s for SDET).
+#
+# Usage:
+#   docker compose -f docker-compose.e2e.yml up --build -d
+#   python -m e2e.cli run --peers 3 --base-ws-port 5201   # from host (ports published)
+#   docker compose -f docker-compose.e2e.yml down
+#
+# For code-driven tests without Docker, prefer:
+#   python -m e2e.cli run
+#   pytest -m e2e
+
+services:
+  peer1:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    command: ["python", "-m", "e2e.peer_worker", "--host", "0.0.0.0", "--port", "5201", "--control-port", "15201"]
+    ports:
+      - "5201:5201"
+      - "15201:15201"
+
+  peer2:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    command: ["python", "-m", "e2e.peer_worker", "--host", "0.0.0.0", "--port", "5202", "--control-port", "15202"]
+    ports:
+      - "5202:5202"
+      - "15202:15202"
+
+  peer3:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    command: ["python", "-m", "e2e.peer_worker", "--host", "0.0.0.0", "--port", "5203", "--control-port", "15203"]
+    ports:
+      - "5203:5203"
+      - "15203:15203"
