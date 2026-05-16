@@ -144,16 +144,46 @@ TODO
 ### 6.3 Shamathmika
 
 **Main work:**  
-TODO
+I designed and implemented the vector clock and hold-back queue that give the system causal message ordering. Without this, messages can be delivered in any order depending on network timing, which causes replies to appear before the messages they reply to.
+
+The vector clock tracks how many messages each node has sent. Every outgoing message carries a snapshot of this clock. When a message arrives, the receiver checks two conditions before delivering it: the sender's sequence must be exactly one ahead of what the receiver has already seen from that sender, and every other node's count in the incoming clock must be at most what the receiver has seen from that node. If both pass, the message is delivered and the local clock is updated. If either fails, the message waits in the hold-back queue.
+
+The hold-back queue buffers out-of-order messages and re-checks them after every delivery. A single delivery can cascade: delivering M1 updates the local clock, which may unblock M2, which unblocks M3, and so on. The drain loop repeats until a full pass produces nothing new.
+
+The hold-back queue also has a 30-second timeout. If a predecessor message is permanently lost, messages waiting for it would be stuck forever. After the timeout, a stuck message is delivered out of causal order with a warning rather than held indefinitely. The timeout also merges the stuck message's clock so its successors can cascade out in the same drain pass.
+
+I also added `sync_vector_clock` to `BroadcastNode`. When a node restarts, its vector clock is zeroed. Live messages referencing history the node missed fail the causal check and pile into hold-back. `sync_vector_clock(recovered_vc)` merges the recovered clock into the local state and drains the hold-back queue, unblocking any stuck messages. A related fix ensures the hold-back queue drains on every incoming message, not only on messages that pass the causal check, so the timeout actually fires in low-traffic conditions.
 
 **Tests / validation:**  
-TODO
+Tests cover the full vector clock and hold-back behavior:
+
+- `test_increment_starts_at_one`, `test_increment_accumulates`, `test_increment_tracks_multiple_nodes`: basic clock increment behavior
+- `test_merge_takes_element_wise_max`, `test_merge_does_not_decrease_existing_entry`, `test_merge_adds_new_nodes`: merge correctness
+- `test_snapshot_returns_copy`: snapshot isolation so callers cannot mutate internal state
+- `test_is_ready_*`: seven tests covering the causal readiness check including gaps, duplicates, missing predecessors, and partial satisfaction
+- `test_drain_releases_ready_message`, `test_drain_holds_unready_message`, `test_drain_removes_released_messages`: basic drain behavior
+- `test_drain_updates_vc_so_cascade_unblocks`, `test_drain_cascade_across_senders`: cascade delivery across single and multiple senders
+- `test_drain_leaves_still_blocked_messages`: verifies partially unblocked queues leave the rest intact
+- `test_drain_timeout_delivers_stuck_message_out_of_order`, `test_drain_timeout_advances_vc_so_successor_is_released`: timeout delivery and its cascade effect
+- `test_broadcast_sets_vector_clock`, `test_broadcast_increments_on_successive_calls`: outgoing messages carry correct clocks
+- `test_receive_holds_out_of_order_message`, `test_receive_delivers_in_causal_order`: end-to-end causal ordering through BroadcastNode
+- `test_receive_deduplicates_before_causal_check`, `test_receive_empty_vc_delivered_immediately`: edge cases
+- `test_sync_vector_clock_unblocks_held_messages`, `test_sync_vector_clock_is_idempotent`: recovery sync correctness
+- `test_message_serialisation_round_trip_with_vc`, `test_message_deserialises_without_vc_field`: backwards-compatible serialization
 
 **Problems found and fixes:**  
-TODO
+
+1. **Hold-back queue stalls permanently in low-traffic conditions.**  
+   The timeout check only runs inside `drain()`, and `drain()` was only called when a message passed the causal check. If no message ever passes (for example, because the clock is zeroed after a restart), the timeout never fires and the queue is stuck indefinitely. The fix was to call `drain()` on every incoming message regardless of whether it passed the causal check.
+
+2. **Node restarts with a zeroed vector clock, blocking all live messages.**  
+   After a restart, the local clock is `{}`. Any live message with a clock like `{node1: 5}` fails `5 != 0+1` and goes into hold-back. The fix is `sync_vector_clock`, which merges the recovered clock into the local state and drains the hold-back queue in one operation.
+
+3. **Timeout delivery creates a permanent ordering violation for late predecessors.**  
+   When a timed-out message is force-delivered, the local clock advances past the gap. If the missing predecessor arrives later, it fails the sequence check and goes back into hold-back where it will time out again. This is a known limitation: one permanently lost message cascades into an ordering violation for everything behind it.
 
 **What I learned:**  
-TODO
+Causal ordering is not a property of sending order, it is a property of what each node has seen. Messages can arrive out of order for normal network reasons and the system has to buffer them without stalling indefinitely. Vector clocks provide the metadata and the hold-back queue provides the mechanism, but correctness and liveness are in tension. A strict causal check is correct but can block forever if a predecessor is lost. The timeout is a deliberate tradeoff: progress is more useful than strict ordering when a message is gone for good. Making that tradeoff explicit and understanding what it costs is more valuable than avoiding the problem.
 
 ---
 
