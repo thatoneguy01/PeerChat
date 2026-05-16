@@ -23,7 +23,8 @@ ACTIVE_LOG = LOG_DIR / "active.log.jsonl"
 MSG_ID_INDEX = INDEX_DIR / "message_id.index"
 SENDER_INDEX = INDEX_DIR / "sender_seq.index"
 VC_INDEX = INDEX_DIR / "latest_vector_clock.json"
-DEFAULT_SNAPSHOT_THRESHOLD = 200
+RECOVERY_STATE = INDEX_DIR / "recovery_state.json"
+DEFAULT_SNAPSHOT_THRESHOLD = 3
 
 
 class LocalMessageStore:
@@ -41,6 +42,7 @@ class LocalMessageStore:
         self._snapshot_threshold = snapshot_threshold
         self._ensure_dirs()
         self._load_indexes()
+        self._repair_indexes_from_readable_storage()
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -82,6 +84,70 @@ class LocalMessageStore:
             if isinstance(latest_vc, dict)
             else {}
         )
+
+        recovery_state = self._read_json(RECOVERY_STATE, default={})
+        self._force_full_recovery_cursor = (
+            bool(recovery_state.get("force_full_recovery_cursor"))
+            if isinstance(recovery_state, dict)
+            else False
+        )
+
+    def _repair_indexes_from_readable_storage(self) -> None:
+        """
+        Reconcile indexes with the message data that is actually readable.
+
+        """
+        with self._lock:
+            loaded_message_ids = set(self._message_ids)
+            self._active_log_had_invalid_lines = False
+            storage_damage_detected = (
+                self._has_unreadable_snapshot_unlocked()
+                or self._has_snapshot_sequence_gaps_unlocked()
+            )
+            repaired_message_ids: set[str] = set()
+            repaired_sender_seq: Dict[str, Dict[str, int]] = {}
+            repaired_latest_vc: Dict[str, int] = {}
+            changed = False
+
+            for source, msg, offset in self._iter_readable_messages_with_offsets_unlocked():
+                if msg.id in repaired_message_ids:
+                    changed = True
+                    continue
+
+                repaired_message_ids.add(msg.id)
+                seq = msg.sender_seq()
+                repaired_sender_seq.setdefault(msg.sender, {})[str(seq)] = (
+                    offset if source == "active" else -1
+                )
+                if seq > repaired_latest_vc.get(msg.sender, 0):
+                    repaired_latest_vc[msg.sender] = seq
+
+            if (
+                repaired_message_ids != self._message_ids
+                or repaired_sender_seq != self._sender_seq
+                or repaired_latest_vc != self._latest_vc
+            ):
+                changed = True
+
+            if self._active_log_had_invalid_lines:
+                storage_damage_detected = True
+            if self._has_sender_sequence_gaps(repaired_sender_seq):
+                storage_damage_detected = True
+
+            if changed:
+                if (
+                    storage_damage_detected
+                    or not loaded_message_ids.issubset(repaired_message_ids)
+                ):
+                    self._force_full_recovery_cursor = True
+                self._message_ids = repaired_message_ids
+                self._sender_seq = repaired_sender_seq
+                self._latest_vc = repaired_latest_vc
+                self._flush_indexes()
+
+            elif storage_damage_detected:
+                self._force_full_recovery_cursor = True
+                self._flush_indexes()
 
     def _read_json(self, path: Path, default):
         """
@@ -189,6 +255,10 @@ class LocalMessageStore:
         self._write_json(MSG_ID_INDEX, list(self._message_ids))
         self._write_json(SENDER_INDEX, self._sender_seq)
         self._write_json(VC_INDEX, self._latest_vc)
+        self._write_json(
+            RECOVERY_STATE,
+            {"force_full_recovery_cursor": self._force_full_recovery_cursor},
+        )
 
     def _write_json(self, path: Path, data):
         """Atomically write JSON to a file."""
@@ -376,38 +446,87 @@ class LocalMessageStore:
 
     def _read_all_messages_unlocked(self) -> List[Message]:
         """Read snapshots followed by active log, dropping duplicate IDs."""
-        messages: List[Message] = []
+        messages: List[tuple[float, int, Message]] = []
         seen_ids: set[str] = set()
 
+        for read_index, (_, msg, _) in enumerate(self._iter_readable_messages_with_offsets_unlocked()):
+            if msg.id not in seen_ids:
+                seen_ids.add(msg.id)
+                messages.append((msg.timestamp, read_index, msg))
+
+        messages.sort(key=lambda item: (item[0], item[1]))
+        return [msg for _, _, msg in messages]
+
+    def _iter_readable_messages_with_offsets_unlocked(self):
         for meta in self.list_snapshots():
             snapshot_id = str(meta.get("snapshot_id", ""))
             for msg in self.read_snapshot_messages(snapshot_id):
-                if msg.id not in seen_ids:
-                    seen_ids.add(msg.id)
-                    messages.append(msg)
+                yield "snapshot", msg, -1
 
-        for msg in self._read_active_messages_unlocked():
-            if msg.id not in seen_ids:
-                seen_ids.add(msg.id)
-                messages.append(msg)
-
-        return messages
+        for msg, offset in self._read_active_messages_with_offsets_unlocked():
+            yield "active", msg, offset
 
     def _read_active_messages_unlocked(self) -> List[Message]:
+        return [
+            msg
+            for msg, _ in self._read_active_messages_with_offsets_unlocked()
+        ]
+
+    def _read_active_messages_with_offsets_unlocked(self) -> List[tuple[Message, int]]:
         if not ACTIVE_LOG.exists():
             return []
 
-        messages: List[Message] = []
-        with ACTIVE_LOG.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    messages.append(Message.from_json(line))
-                except (KeyError, json.JSONDecodeError, TypeError, ValueError):
-                    continue
+        messages: List[tuple[Message, int]] = []
+        try:
+            with ACTIVE_LOG.open("r", encoding="utf-8") as f:
+                while True:
+                    offset = f.tell()
+                    line = f.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        messages.append((Message.from_json(line), offset))
+                    except (KeyError, json.JSONDecodeError, TypeError, ValueError):
+                        self._active_log_had_invalid_lines = True
+                        continue
+        except (OSError, UnicodeDecodeError):
+            self._active_log_had_invalid_lines = True
         return messages
+
+    def _has_unreadable_snapshot_unlocked(self) -> bool:
+        for meta in self.list_snapshots():
+            expected_count = self._safe_int(meta.get("message_count", 0))
+            if expected_count <= 0:
+                continue
+
+            snapshot_id = str(meta.get("snapshot_id", ""))
+            if len(self.read_snapshot_messages(snapshot_id)) < expected_count:
+                return True
+
+        return False
+
+    def _has_snapshot_sequence_gaps_unlocked(self) -> bool:
+        snapshot_numbers: List[int] = []
+        for meta in self.list_snapshots():
+            snapshot_id = str(meta.get("snapshot_id", ""))
+            prefix = "snapshot-"
+            if not snapshot_id.startswith(prefix):
+                continue
+
+            try:
+                snapshot_numbers.append(int(snapshot_id[len(prefix):]))
+            except ValueError:
+                continue
+
+        if not snapshot_numbers:
+            return False
+
+        snapshot_numbers.sort()
+        expected = list(range(snapshot_numbers[0], snapshot_numbers[-1] + 1))
+        return snapshot_numbers != expected
 
     def _active_log_message_count_unlocked(self) -> int:
         return len(self._read_active_messages_unlocked())
@@ -429,8 +548,21 @@ class LocalMessageStore:
         return messages
 
     def _next_snapshot_id_unlocked(self) -> str:
-        existing = sorted(SNAPSHOT_DIR.glob("snapshot-*.meta.json"))
-        return f"snapshot-{len(existing) + 1:04d}"
+        max_snapshot_number = 0
+        for meta_path in SNAPSHOT_DIR.glob("snapshot-*.meta.json"):
+            stem = meta_path.stem
+            if stem.endswith(".meta"):
+                stem = stem[:-len(".meta")]
+
+            try:
+                snapshot_number = int(stem.removeprefix("snapshot-"))
+            except ValueError:
+                continue
+
+            if snapshot_number > max_snapshot_number:
+                max_snapshot_number = snapshot_number
+
+        return f"snapshot-{max_snapshot_number + 1:04d}"
 
     def _vector_clock_for_messages(self, messages: Iterable[Message]) -> Dict[str, int]:
         vc: Dict[str, int] = {}
@@ -474,5 +606,27 @@ class LocalMessageStore:
 
         Sent in recover_request so a peer knows what this node already has.
         """
+        self._repair_indexes_from_readable_storage()
         with self._lock:
+            if self._force_full_recovery_cursor:
+                if self._has_sender_sequence_gaps_unlocked():
+                    return {}
+                self._force_full_recovery_cursor = False
+                self._flush_indexes()
             return dict(self._latest_vc)
+
+    def _has_sender_sequence_gaps_unlocked(self) -> bool:
+        return self._has_sender_sequence_gaps(self._sender_seq)
+
+    def _has_sender_sequence_gaps(self, sender_seq: Dict[str, Dict[str, int]]) -> bool:
+        for seq_map in sender_seq.values():
+            seqs = sorted(
+                self._safe_int(seq)
+                for seq in seq_map
+                if self._safe_int(seq) > 0
+            )
+            if not seqs:
+                continue
+            if seqs != list(range(1, seqs[-1] + 1)):
+                return True
+        return False
