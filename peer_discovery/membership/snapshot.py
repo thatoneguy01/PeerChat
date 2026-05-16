@@ -119,6 +119,7 @@ class MembershipSnapshot:
                 joined_at=event.timestamp,
                 last_heartbeat=event.timestamp,
                 membership_version=event.membership_version,
+                public_key=event.public_key,
             )
             return MembershipDelta(type="joined", user_id=uid, event=event)
 

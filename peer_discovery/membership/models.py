@@ -1,3 +1,4 @@
+import base64
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any
@@ -39,9 +40,11 @@ class MembershipEvent:
     term: int
     trace_id: str | None = None
     display_name: str = ""
+    originator: str | None = None
+    public_key: bytes | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "seq_no": self.seq_no,
             "room_id": self.room_id,
             "user_id": self.user_id,
@@ -52,10 +55,16 @@ class MembershipEvent:
             "term": self.term,
             "trace_id": self.trace_id,
             "display_name": self.display_name,
+            "originator": self.originator,
         }
+        if self.public_key is not None:
+            d["public_key_b64"] = base64.b64encode(self.public_key).decode()
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MembershipEvent":
+        pk_b64 = data.get("public_key_b64")
+        pk = base64.b64decode(pk_b64) if pk_b64 else None
         return cls(
             seq_no=data["seq_no"],
             room_id=data["room_id"],
@@ -67,6 +76,8 @@ class MembershipEvent:
             term=data["term"],
             trace_id=data.get("trace_id"),
             display_name=data.get("display_name", ""),
+            originator=data.get("originator"),
+            public_key=pk,
         )
 
 
@@ -78,9 +89,10 @@ class MemberInfo:
     joined_at: float
     last_heartbeat: float
     membership_version: int
+    public_key: bytes | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "user_id": self.user_id,
             "display_name": self.display_name,
             "state": self.state.value,
@@ -88,9 +100,14 @@ class MemberInfo:
             "last_heartbeat": self.last_heartbeat,
             "membership_version": self.membership_version,
         }
+        if self.public_key is not None:
+            d["public_key_b64"] = base64.b64encode(self.public_key).decode()
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MemberInfo":
+        pk_b64 = data.get("public_key_b64")
+        pk = base64.b64decode(pk_b64) if pk_b64 else None
         return cls(
             user_id=data["user_id"],
             display_name=data["display_name"],
@@ -98,6 +115,7 @@ class MemberInfo:
             joined_at=data["joined_at"],
             last_heartbeat=data["last_heartbeat"],
             membership_version=data["membership_version"],
+            public_key=pk,
         )
 
 
