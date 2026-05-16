@@ -1,325 +1,136 @@
 """
-Demo: 10 broadcast nodes exchange a message over WebSockets.
+Interactive history/recovery demo.
 
-Run with:
-    python3.11 demo.py
+Run one terminal per node:
+    python demo.py --port 5001 --peers 5002 5003 --clean
+    python demo.py --port 5002 --peers 5001 5003 --clean
+    python demo.py --port 5003 --peers 5001 5002 --clean
 
-Expected output (received order may vary):
-    [Node :5001] SENT: 'Hello from Node 1!'
-    [Node :5001] received: 'Hello from Node 1!'  (id=xxxxxxxx)
-    [Node :5002] received: 'Hello from Node 1!'  (id=xxxxxxxx)
-    ...
-    [Node :5010] received: 'Hello from Node 1!'  (id=xxxxxxxx)
-
-    [Demo complete — 10/10 nodes received the message]
+Commands:
+    send <text>   broadcast a chat message
+    show          print local stored history
+    vc            print this node's latest vector clock
+    list snapshots
+    quit          stop this node
 """
 
-import time
-import logging
-import threading
-import asyncio
-import os
 import argparse
 import json
+import shutil
+import sys
+import time
+from pathlib import Path
+
 from distribution import BroadcastNode, InMemoryRegistry, Message
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-7s  %(message)s",
-)
 
-PORTS = list(range(5001, 5011))   # 5001 through 5010
-ENABLE_HISTORY = os.getenv("PEERCHAT_HISTORY") == "1"
+ROOT = Path(__file__).resolve().parent
+HISTORY_ROOT = ROOT / "message-history"
+if str(HISTORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(HISTORY_ROOT))
+
+from storage import wire_node  # noqa: E402
+from storage import local_message_store as store_paths  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="PeerChat demo and interactive runner.")
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Reachable host/IP advertised to peers. Default: 127.0.0.1",
-    )
-    parser.add_argument(
-        "--bind-host",
-        help="Host/IP to bind the WebSocket server to. Default: same as --host",
-    )
-    parser.add_argument("--port", type=int, help="Run one interactive node on this port.")
-    parser.add_argument(
-        "--peers",
-        nargs="*",
-        default=[],
-        help=(
-            "Peer ports or host:port values, for example: "
-            "--peers 5002 5003 or --peers 10.0.0.16:5003"
-        ),
-    )
+    parser = argparse.ArgumentParser(description="Run one history-enabled PeerChat node.")
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--peers", nargs="*", type=int, default=[])
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--clean", action="store_true")
     return parser.parse_args()
 
 
-def section(title: str) -> None:
-    print(f"\n{'=' * 55}")
-    print(f"  {title}")
-    print(f"{'=' * 55}\n")
+def is_recovery_message(msg: Message) -> bool:
+    try:
+        payload = json.loads(msg.content)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return payload.get("type") in {"recover_request", "history_chunk"}
 
 
-def main():
-    args = parse_args()
-    if args.port is not None:
-        run_interactive(args)
-        return
+def use_storage_for_port(port: int, clean: bool) -> None:
+    root = HISTORY_ROOT / "runtime" / str(port)
+    if clean:
+        shutil.rmtree(root, ignore_errors=True)
 
-    run_demo()
+    store_paths.LOG_DIR = root / "logs"
+    store_paths.INDEX_DIR = root / "index"
+    store_paths.SNAPSHOT_DIR = root / "snapshots"
+    store_paths.ACTIVE_LOG = store_paths.LOG_DIR / "active.log.jsonl"
+    store_paths.MSG_ID_INDEX = store_paths.INDEX_DIR / "message_id.index"
+    store_paths.SENDER_INDEX = store_paths.INDEX_DIR / "sender_seq.index"
+    store_paths.VC_INDEX = store_paths.INDEX_DIR / "latest_vector_clock.json"
+    store_paths.RECOVERY_STATE = store_paths.INDEX_DIR / "recovery_state.json"
 
 
-def run_interactive(args: argparse.Namespace) -> None:
-    logging.getLogger().setLevel(logging.WARNING)
-
-    bind_host = args.bind_host or args.host
-    advertised_host = args.host
-    peers = parse_peer_addresses(args.peers, default_host=advertised_host)
-
+def build_registry(host: str, port: int, peer_ports: list[int]) -> InMemoryRegistry:
     registry = InMemoryRegistry()
-    registry.add_peer(advertised_host, args.port)
-    for peer_host, peer_port in peers:
-        registry.add_peer(peer_host, peer_port)
+    registry.add_peer(host, port)
+    for peer_port in peer_ports:
+        registry.add_peer(host, peer_port)
+    return registry
 
-    node = BroadcastNode(bind_host, args.port, registry)
-    node.address = f"{advertised_host}:{args.port}"
-    history = []
-    wiring = None
 
-    def handle_message(msg: Message):
-        if wiring:
-            sync_node_clock_from_store(node, wiring.store)
-            if is_recovery_transport(msg):
-                return
+def main() -> None:
+    args = parse_args()
+    use_storage_for_port(args.port, args.clean)
 
-        history.append(msg)
-        print(f"\n[{node.address}] from {msg.sender}: {msg.content}", flush=True)
+    registry = build_registry(args.host, args.port, args.peers)
+    node = BroadcastNode(args.host, args.port, registry)
+    wiring = wire_node(
+        node=node,
+        host=args.host,
+        port=args.port,
+        pull_recovery_on_start=True,
+    )
 
-    if ENABLE_HISTORY:
-        from storage import wire_node
+    if hasattr(node, "sync_vector_clock"):
+        node.sync_vector_clock(wiring.store.get_latest_vector_clock())
 
-        wiring = wire_node(
-            node=node,
-            host=advertised_host,
-            port=args.port,
-            pull_recovery_on_start=True,
-        )
-        wiring.listeners.register(handle_message)
-    else:
-        node.on_message = handle_message
-        node.start()
+    def print_chat(msg: Message) -> None:
+        if is_recovery_message(msg):
+            return
+        print(f"\n[{msg.sender}] {msg.content}", flush=True)
 
-    peer_list = ", ".join(f"{host}:{port}" for host, port in peers) or "none"
-    print(f"Running {node.address} | peers: {peer_list}")
-    print("Commands: send <message> | show | quit")
+    wiring.listeners.register(print_chat)
+
+    print(f"Node {args.host}:{args.port} running. Peers: {args.peers}")
+    print("Commands: send <text> | show | vc | list snapshots | quit")
 
     try:
         while True:
-            text = input("> ").strip()
-            if not text:
+            command = input("> ").strip()
+            if not command:
                 continue
 
-            if text == "quit":
+            if command == "quit":
                 break
 
-            if text == "show":
-                messages = wiring.store.get_recent(100) if wiring else history
-                print("History:")
-                for index, msg in enumerate(messages, start=1):
-                    print(f"{index}. [{msg.sender}] {msg.content}")
+            if command == "show":
+                for msg in wiring.store.get_recent(100):
+                    print(f"[{msg.sender}] {msg.content} vc={msg.vector_clock}")
                 continue
 
-            if text.startswith("send "):
-                text = text[5:].strip()
+            if command == "vc":
+                print(wiring.store.get_latest_vector_clock())
+                continue
 
+            if command == "list snapshots":
+                for meta in wiring.store.list_snapshots():
+                    print(meta)
+                continue
+
+            text = command[5:].strip() if command.startswith("send ") else command
             if text:
-                if wiring:
-                    sync_node_clock_from_store(node, wiring.store)
+                if hasattr(node, "sync_vector_clock"):
+                    node.sync_vector_clock(wiring.store.get_latest_vector_clock())
                 node.broadcast(Message(content=text, sender=node.address))
-    except KeyboardInterrupt:
-        print()
     finally:
         node.stop()
         time.sleep(0.2)
 
 
-def parse_peer_addresses(peer_values: list[str], default_host: str) -> list[tuple[str, int]]:
-    peers = []
-    for value in peer_values:
-        if ":" in value:
-            host, port_text = value.rsplit(":", 1)
-            peers.append((host, int(port_text)))
-        else:
-            peers.append((default_host, int(value)))
-    return peers
-
-
-def is_recovery_transport(msg: Message) -> bool:
-    try:
-        payload = json.loads(msg.content)
-    except (TypeError, json.JSONDecodeError):
-        return False
-
-    return payload.get("type") in {"recover_request", "history_chunk"}
-
-
-def sync_node_clock_from_store(node: BroadcastNode, store) -> None:
-    latest = store.get_latest_vector_clock()
-    if latest:
-        node._vc.merge(latest)
-
-
-def run_demo():
-    # ── Shared peer list (provided by Discovery team in the real system) ──────
-    registry = InMemoryRegistry()
-    for port in PORTS:
-        registry.add_peer("127.0.0.1", port)
-
-    # ── Track how many nodes received the message ─────────────────────────────
-    received_count = 0
-    count_lock = threading.Lock()
-
-    def make_handler(label: str):
-        def handler(msg: Message):
-            nonlocal received_count
-            with count_lock:
-                received_count += 1
-            print(f"  [{label}] received: {msg.content!r}  (id={msg.id[:8]})")
-        return handler
-
-    # ── Start 10 nodes ────────────────────────────────────────────────────────
-    print(f"Starting {len(PORTS)} nodes on ports {PORTS[0]}–{PORTS[-1]}...\n")
-    nodes = []
-    for port in PORTS:
-        node = BroadcastNode("127.0.0.1", port, registry)
-        if ENABLE_HISTORY:
-            from storage import wire_node
-
-            wiring = wire_node(
-                node=node,
-                host="127.0.0.1",
-                port=port,
-                pull_recovery_on_start=True,
-            )
-            wiring.listeners.register(make_handler(f"Node :{port}"))
-        else:
-            node.on_message = make_handler(f"Node :{port}")
-            node.start()
-        nodes.append(node)
-
-    time.sleep(0.5)   # wait for all WebSocket servers to finish binding
-
-    # ── Node 1 broadcasts a message ───────────────────────────────────────────
-    msg = Message(content="Hello from Node 1!", sender="127.0.0.1:5001")
-    print(f"[Node :5001] SENT: {msg.content!r}\n")
-    nodes[0].broadcast(msg)
-
-    time.sleep(2.0)   # wait for broadcast + ACKs to complete across all 10 nodes
-
-    # ── Results ───────────────────────────────────────────────────────────────
-    print(f"\n[Demo complete — {received_count}/{len(PORTS)} nodes received the message]")
-
-    for node in nodes:
-        node.stop()
-
-    demo_causal()
-
-
-# ── Causal ordering demos (messages injected directly into BroadcastNode) ────────────────
-
-def make_broadcast_node(port: int, label: str):
-    node = BroadcastNode("127.0.0.1", port, InMemoryRegistry())
-    log = []
-    node.on_message = lambda msg: log.append(
-        f"  [{label}] delivered: {msg.content!r}  vc={msg.vector_clock}"
-    )
-    return node, log
-
-
-def demo_causal() -> None:
-    section("Causal ordering: single sender, M2 arrives before M1")
-    receiver, log = make_broadcast_node(19100, "receiver")
-    sender_addr = "127.0.0.1:9001"
-    m1 = Message(content="M1: hello", sender=sender_addr, vector_clock={sender_addr: 1})
-    m2 = Message(content="M2: reply", sender=sender_addr, vector_clock={sender_addr: 2})
-    print("  Injecting M2 first (M1 not yet seen)...")
-    asyncio.run(receiver._receive(m2))
-    print(f"  Delivered so far: {len(log)}  (expected 0, held back)\n")
-    print("  Injecting M1...")
-    asyncio.run(receiver._receive(m1))
-    print(f"  Delivered so far: {len(log)}  (expected 2, cascade flushed)\n")
-    for line in log:
-        print(line)
-
-    section("Causal ordering: B replies to A, C sees B's reply first")
-    node_c, log_c = make_broadcast_node(19101, "C")
-    addr_a, addr_b = "127.0.0.1:9010", "127.0.0.1:9011"
-    ma1 = Message(content="A: hello", sender=addr_a, vector_clock={addr_a: 1})
-    mb1 = Message(content="B: hi A!", sender=addr_b, vector_clock={addr_a: 1, addr_b: 1})
-    print("  C receives B's reply before A's original...")
-    asyncio.run(node_c._receive(mb1))
-    print(f"  Delivered so far: {len(log_c)}  (expected 0, waiting for A)\n")
-    print("  C now receives A's original message...")
-    asyncio.run(node_c._receive(ma1))
-    print(f"  Delivered so far: {len(log_c)}  (expected 2, B's reply flushed)\n")
-    for line in log_c:
-        print(line)
-
-    section("Causal ordering: three messages, all arrive in reverse order")
-    node_d, log_d = make_broadcast_node(19102, "D")
-    addr_s = "127.0.0.1:9020"
-    msgs = [
-        Message(content=f"msg {i}", sender=addr_s, vector_clock={addr_s: i})
-        for i in range(1, 4)
-    ]
-    print("  Injecting msg 3, msg 2, msg 1 in that order...")
-    for msg in reversed(msgs):
-        asyncio.run(node_d._receive(msg))
-        print(f"  After {msg.content!r} arrives: {len(log_d)} delivered")
-    print("\n  Final delivery order:")
-    for line in log_d:
-        print(line)
-
-    section("Causal ordering: broadcast() stamps vector clock on outgoing messages")
-    sender_node, _ = make_broadcast_node(19103, "sender")
-    for i in range(3):
-        msg = Message(content=f"message {i + 1}", sender=sender_node.address)
-        asyncio.run(sender_node._do_broadcast(msg))
-        print(f"  sent: {msg.content!r}  vc={msg.vector_clock}")
-
-
-def demo_sync_vc() -> None:
-    section("sync_vector_clock: node restarts with zeroed VC, live messages arrive referencing history")
-
-    node, log = make_broadcast_node(19104, "node3")
-    node1 = "192.168.0.109:5001"
-    node2 = "192.168.0.110:5002"
-
-    # node3 just restarted. History recovery saved 2 messages from node1
-    # and 1 from node2 into the store, but BroadcastNode._vc is still zeroed.
-    # Two live messages now arrive that reference that history.
-    live1 = Message(content="live: node1 msg 3 (refs history)", sender=node1,
-                    vector_clock={node1: 3, node2: 1})
-    live2 = Message(content="live: node2 msg 2 (refs history)", sender=node2,
-                    vector_clock={node1: 3, node2: 2})
-
-    print("  Two live messages arrive; VC is zeroed so both are held back.")
-    asyncio.run(node._receive(live1))
-    asyncio.run(node._receive(live2))
-    print(f"  Delivered so far: {len(log)}  (expected 0 — VC is zeroed, hold-back stuck)\n")
-
-    # History team calls sync_vector_clock after recovery completes.
-    # Recovered VC reflects what is now in the store: node1 sent 2, node2 sent 1.
-    recovered_vc = {node1: 2, node2: 1}
-    print(f"  Calling sync_vector_clock({recovered_vc}) to seed VC from recovered history ...")
-    asyncio.run(node._apply_vc_sync(recovered_vc))
-    print(f"  Delivered so far: {len(log)}  (expected 2 — both live messages unblocked)\n")
-    for line in log:
-        print(line)
-
-
 if __name__ == "__main__":
     main()
-    demo_sync_vc()
