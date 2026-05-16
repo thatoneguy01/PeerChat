@@ -1,17 +1,30 @@
 from __future__ import annotations
 
-from time import time
-from .contracts import MessageRecord, UserRecord
+from typing import TYPE_CHECKING, Callable
+
 from distribution import Message
+
+from .contracts import MessageRecord, UserRecord
+
+if TYPE_CHECKING:
+    from security.chat_session import SecureChatSession
 
 
 class Service:
     _BASE_MESSAGES: list[MessageRecord] = []
 
-    def __init__(self, refreshes: dict[str, callable]) -> None:
+    def __init__(
+        self,
+        refreshes: dict[str, callable],
+        *,
+        secure_session: SecureChatSession | None = None,
+        broadcast_message: Callable[[Message], None] | None = None,
+    ) -> None:
         self._messages: list[MessageRecord] = self._BASE_MESSAGES
         self._users: list[UserRecord] = []
         self._refreshes = refreshes
+        self._secure = secure_session
+        self._broadcast_message = broadcast_message
         self.message_out = lambda content: None
         self.message_in = lambda content, timestamp, sender_ip: None
 
@@ -22,12 +35,30 @@ class Service:
         return self._messages
 
     def post_message(self, content: str) -> None:
-        # self._messages.append({"timestamp":time(), "content": content})
+        if self._secure is not None and self._broadcast_message is not None:
+            sender = getattr(self, "node_address", "local")
+            msg = self._secure.prepare_outgoing(plaintext=content, sender_address=sender)
+            self._broadcast_message(msg)
+            return
         self.message_out(content)
 
     def message_received(self, msg: Message) -> None:
-        self._messages.append({"sender": msg.sender_ip, "timestamp": msg.timestamp, "content": msg.content})
-        self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
+        if self._secure is not None:
+            plaintext = self._secure.open_incoming(msg)
+            if plaintext is None:
+                return
+            display_content = plaintext
+        else:
+            display_content = msg.content
+
+        self._messages.append(
+            {
+                "sender": msg.sender,
+                "timestamp": msg.timestamp,
+                "content": display_content,
+            }
+        )
+        self._refreshes.get("messages", lambda: None)(self._messages)
 
     def user_connected(self, username: str, ip: str) -> None:
         #call in here from your discovery mechanism when you detect a new user
