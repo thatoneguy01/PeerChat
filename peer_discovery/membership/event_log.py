@@ -33,6 +33,7 @@ class MembershipEventLog:
         term: int,
         display_name: str = "",
         trace_id: str | None = None,
+        public_key: bytes | None = None,
     ) -> MembershipEvent:
         with self._lock:
             if term < self._current_term:
@@ -53,10 +54,36 @@ class MembershipEventLog:
                 term=self._current_term,
                 trace_id=trace_id,
                 display_name=display_name,
+                public_key=public_key,
             )
             self._log.append(event)
             self._next_seq_no += 1
             return event
+
+    def append_remote(self, event: MembershipEvent) -> MembershipEvent:
+        """Append an event received from a remote peer, assigning a local seq_no."""
+        with self._lock:
+            # Term is advanced if the remote term is higher
+            if event.term > self._current_term:
+                self._current_term = event.term
+
+            local_event = MembershipEvent(
+                seq_no=self._next_seq_no,
+                room_id=self._room_id,
+                user_id=event.user_id,
+                event_type=event.event_type,
+                timestamp=event.timestamp,
+                membership_version=self._next_seq_no,
+                source="remote",
+                term=self._current_term,
+                trace_id=event.trace_id,
+                display_name=event.display_name,
+                originator=event.originator,
+                public_key=event.public_key,
+            )
+            self._log.append(local_event)
+            self._next_seq_no += 1
+            return local_event
 
     def get_events_since(self, seq_no: int) -> list[MembershipEvent]:
         with self._lock:
