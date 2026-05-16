@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import keyring
 
 from security.persistent_key_storage import PersistentKeyStorage, PersistentKeyStorageError
@@ -10,7 +9,7 @@ from security.persistent_key_storage import PersistentKeyStorage, PersistentKeyS
 class KeyringKeyStorage(PersistentKeyStorage):
     """
     Cross-platform persistent key storage using the operating
-    system's secure credential/key storage.
+    system's secure credential/key storage
 
     OS mappings:
         Windows -> Credential Manager / DPAPI
@@ -18,97 +17,70 @@ class KeyringKeyStorage(PersistentKeyStorage):
         Linux   -> Secret Service / keyring backend
 
     Purpose:
-        Persist the shared AES-256 group key across application
-        restarts without storing plaintext keys directly in files.
+        Persist this user's asymmetric private key across application restarts
+        without storing plaintext private key material in project files
 
     Notes:
-        - The active key is still loaded into memory during runtime.
-        - This layer only handles persistent storage.
+        - Public keys are not secret and do not need this protected storage
+        - The private key is still loaded into memory during runtime
     """
 
     SERVICE_NAME = "peerchat"
-    ACCOUNT_NAME = "group_key"
+    ACCOUNT_NAME = "private_key"
 
 
-    def save_group_key(self, key_id: int, key: bytes) -> None:
-        """
-        Securely save a group key into the OS keyring.
+    def save_private_key(self, private_key: bytes) -> None:
+        # Securely save this user's private key into the OS keyring
 
-        Parameters:
-            key_id:
-                Integer identifier for the key version/epoch.
+        if not isinstance(private_key, bytes):
+            raise PersistentKeyStorageError("private key must be bytes")
 
-            key:
-                AES-256 group key bytes (must be exactly 32 bytes).
+        if len(private_key) == 0:
+            raise PersistentKeyStorageError("private key must not be empty")
 
-        Raises:
-            PersistentKeyStorageError:
-                If validation fails or the key cannot be stored.
-        """
-
-        if not isinstance(key_id, int) or key_id < 0:
-            raise PersistentKeyStorageError("key_id must be a non-negative integer")
-
-        if not isinstance(key, bytes) or len(key) != 32:
-            raise PersistentKeyStorageError("group key must be 32 bytes")
-
-        payload = {
-            "key_id": key_id,
-            "key_b64": base64.b64encode(key).decode("ascii"),
-        }
+        encoded_private_key = base64.b64encode(private_key).decode("ascii")
 
         keyring.set_password(
             self.SERVICE_NAME,
             self.ACCOUNT_NAME,
-            json.dumps(payload),
+            encoded_private_key,
         )
 
 
-    def load_group_key(self) -> tuple[int, bytes]:
-        """
-        Load the previously stored group key from the OS keyring.
-
-        Returns:
-            tuple[int, bytes]:
-                (key_id, AES group key)
-
-        Raises:
-            PersistentKeyStorageError:
-                If the key is missing, corrupted, or invalid.
-        """
-
-        stored = keyring.get_password(self.SERVICE_NAME, self.ACCOUNT_NAME)
+    def load_private_key(self) -> bytes:
+        # Load this user's private key from the OS keyring.
+        
+        stored = keyring.get_password(
+            self.SERVICE_NAME,
+            self.ACCOUNT_NAME,
+        )
 
         if stored is None:
-            raise PersistentKeyStorageError("no stored group key found")
+            raise PersistentKeyStorageError("no stored private key found")
 
         try:
-            payload = json.loads(stored)
-            key_id = int(payload["key_id"])
-            key = base64.b64decode(payload["key_b64"])
-
-            if len(key) != 32:
-                raise ValueError("stored key is not 32 bytes")
-
-            return key_id, key
-
+            private_key = base64.b64decode(stored)
         except Exception as exc:
-            raise PersistentKeyStorageError("failed to load stored group key") from exc
+            raise PersistentKeyStorageError(
+                "failed to decode stored private key"
+            ) from exc
 
+        if len(private_key) == 0:
+            raise PersistentKeyStorageError("stored private key is empty")
 
-    def delete_group_key(self) -> None:
+        return private_key
+    
+
+    def delete_private_key(self) -> None:
         """
-        Remove the stored group key from the OS keyring.
+        Remove this user's private key from the OS keyring.
 
-        Used when:
-            - logging out
-            - rotating encryption keys
-            - clearing local credentials
-
-        If the credential does not exist, the operation
-        silently succeeds.
+        If the credential does not exist, the operation silently succeeds.
         """
         try:
-            keyring.delete_password(self.SERVICE_NAME, self.ACCOUNT_NAME)
+            keyring.delete_password(
+                self.SERVICE_NAME,
+                self.ACCOUNT_NAME,
+            )
         except keyring.errors.PasswordDeleteError:
             pass
