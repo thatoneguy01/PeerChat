@@ -24,7 +24,7 @@ MSG_ID_INDEX = INDEX_DIR / "message_id.index"
 SENDER_INDEX = INDEX_DIR / "sender_seq.index"
 VC_INDEX = INDEX_DIR / "latest_vector_clock.json"
 RECOVERY_STATE = INDEX_DIR / "recovery_state.json"
-DEFAULT_SNAPSHOT_THRESHOLD = 3
+DEFAULT_SNAPSHOT_THRESHOLD = 5
 
 
 class LocalMessageStore:
