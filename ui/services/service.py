@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from time import time
 from .contracts import MessageRecord, UserRecord
+from distribution import Message
 
 
 class Service:
@@ -11,6 +12,8 @@ class Service:
         self._messages: list[MessageRecord] = self._BASE_MESSAGES
         self._users: list[UserRecord] = []
         self._refreshes = refreshes
+        self.message_out = lambda content: None
+        self.message_in = lambda content, timestamp, sender_ip: None
 
     def get_users(self) -> list[UserRecord]:
         return self._users
@@ -19,12 +22,11 @@ class Service:
         return self._messages
 
     def post_message(self, content: str) -> None:
-        self._messages.append({"timestamp":time(), "content": content})
-        # Call out here to message distribution
+        # self._messages.append({"timestamp":time(), "content": content})
+        self.message_out(content)
 
-    def message_received(self, content: str, timestamp: int, sender_ip: str) -> None:
-        #call in here from your message distribution to add messages received from other users
-        self._messages.append({"sender": sender_ip, "timestamp": timestamp, "content": content})
+    def message_received(self, msg: Message) -> None:
+        self._messages.append({"sender": msg.sender_ip, "timestamp": msg.timestamp, "content": msg.content})
         self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
 
     def user_connected(self, username: str, ip: str) -> None:
