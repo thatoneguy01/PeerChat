@@ -47,6 +47,7 @@ service.get_membership_snapshot() -> MembershipSnapshot
 service.subscribe_membership_events(callback) -> SubscriptionHandle
 
 # History team handoff
+service.register_history_handler(handler) -> None
 service.start_history_backfill(user_id) -> None
 service.complete_history_backfill(user_id) -> None
 ```
@@ -144,11 +145,11 @@ You own message storage and replay. The Membership Service depends on you for on
 
 ### Methods You Use
 
-You interact with exactly **three** methods and **one** subscription:
+You interact with exactly **three** methods and **one** registration hook (and `get_membership_snapshot()` for Recovery):
 
 ```python
-# 1. Subscribe to know when a new member needs backfill
-handle = service.subscribe_membership_events(your_callback)
+# 1. Register to be automatically notified when a new member joins
+service.register_history_handler(your_handler)
 
 # 2. Tell Membership that you've started replaying history
 service.start_history_backfill(user_id)
@@ -156,8 +157,6 @@ service.start_history_backfill(user_id)
 # 3. Tell Membership that replay is done
 service.complete_history_backfill(user_id)
 ```
-
-You also use `get_membership_snapshot()` for the Recovery feature (details below).
 
 ### The Backfill Protocol Step by Step
 
@@ -170,8 +169,8 @@ Step  Who Does It              What Happens
  2    Membership coordinator   Appends JOIN_REQUESTED to the event log
  3    Membership coordinator   Appends JOIN_ACCEPTED to the event log
  4    Membership coordinator   Member state is now JOINING
- 5    Membership coordinator   Fires event to all subscribers
- 6    YOUR CALLBACK            Receives the JOIN_ACCEPTED event
+ 5    Membership coordinator   Fires JOIN_ACCEPTED event to your registered history handler
+ 6    YOUR HANDLER             Receives the user_id and event
  7    YOUR CODE                Calls service.start_history_backfill("alice")
  8    Membership coordinator   Appends HISTORY_BACKFILL_STARTED
  9    Membership coordinator   Member state is now BACKFILLING
@@ -182,21 +181,19 @@ Step  Who Does It              What Happens
 14    Membership coordinator   Fires event to all subscribers
 ```
 
-### Your Callback Implementation
+### Your Handler Implementation
 
 ```python
-def on_membership_event(event: MembershipEvent, delta: MembershipDelta):
+def your_history_handler(user_id: str, event: MembershipEvent):
     """
-    This is what you register with subscribe_membership_events().
-    You only care about JOIN_ACCEPTED events.
+    This is what you register with register_history_handler().
+    It is automatically called right after a JOIN_ACCEPTED.
     """
-    if event.event_type == EventType.JOIN_ACCEPTED:
-        # A new member needs history backfill
-        start_backfill_for_user(
-            user_id=event.user_id,
-            room_id=event.room_id,
-            joined_at_seq_no=event.seq_no,  # Useful for knowing "backfill up to here"
-        )
+    start_backfill_for_user(
+        user_id=user_id,
+        room_id=event.room_id,
+        joined_at_seq_no=event.seq_no,  # Useful for knowing "backfill up to here"
+    )
 
 
 def start_backfill_for_user(user_id: str, room_id: str, joined_at_seq_no: int):
@@ -294,15 +291,14 @@ def recover_room_state(room_id: str):
 
 ### Your Complete Integration Checklist
 
-1. ☐ Register a callback with `subscribe_membership_events()`
-2. ☐ In the callback, handle `JOIN_ACCEPTED` by starting backfill
-3. ☐ Call `start_history_backfill(user_id)` before beginning replay
-4. ☐ Call `complete_history_backfill(user_id)` after replay finishes
-5. ☐ Ensure backfill completes within the timeout window (default 30s)
-6. ☐ Handle `LEAVE_CONFIRMED` and `DISCONNECT_TIMEOUT` to stop delivery
-7. ☐ For Recovery: call `get_membership_snapshot()` on startup
-8. ☐ For Recovery: re-subscribe with `from_version` to avoid gaps
-9. ☐ For Recovery: restart backfill for any members stuck in `BACKFILLING`
+1. ☐ Register a handler with `register_history_handler()`
+2. ☐ In the handler, call `start_history_backfill(user_id)` before beginning replay
+3. ☐ Call `complete_history_backfill(user_id)` after replay finishes
+4. ☐ Ensure backfill completes within the timeout window (default 30s)
+5. ☐ Handle `LEAVE_CONFIRMED` and `DISCONNECT_TIMEOUT` to stop delivery
+6. ☐ For Recovery: call `get_membership_snapshot()` on startup
+7. ☐ For Recovery: re-subscribe with `from_version` to avoid gaps
+8. ☐ For Recovery: restart backfill for any members stuck in `BACKFILLING`
 
 ### What You Must Never Do
 
