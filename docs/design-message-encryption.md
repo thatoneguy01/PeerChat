@@ -275,7 +275,7 @@ Never log private keys, PEM, or decrypted plaintext.
 | Phase | Deliverable |
 |-------|----------------|
 | **0** | Design alignment (this doc) + `security/encryption.py` |
-| **1** | Discovery publishes pubkeys; demo encrypt → sign → broadcast |
+| **1** | `SecureChatSession` + demo encrypt → sign → broadcast (`demo.py --encrypted-only`) |
 | **2** | UI: show decrypt errors; persist key via keyring |
 | **3** | History stores opaque `content`; optional vector_clock signing |
 
