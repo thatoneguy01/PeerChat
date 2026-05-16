@@ -63,4 +63,4 @@ class InMemoryKeyStore:
     def __repr__(self) -> str:
         # Return a safe debug representation without exposing key material.
         loaded = self._private_key is not None
-        return f"InMemoryPrivateKeyStore(private_key_loaded={loaded}, private_key=<redacted>)"
+        return f"InMemoryKeyStore(private_key_loaded={loaded}, private_key=<redacted>)"
