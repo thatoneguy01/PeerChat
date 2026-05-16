@@ -36,7 +36,7 @@ def wire_node(
     )
     listeners = Listeners()
 
-    storage_listener = _make_storage_listener(streamer, store)
+    storage_listener = _make_storage_listener(streamer, store, node)
     listeners.register(storage_listener)
     node.on_message = listeners.dispatch
 
@@ -62,10 +62,18 @@ def wire_node(
 def _make_storage_listener(
     streamer: HistoryChunkStreamer,
     store: LocalMessageStore,
+    node=None,
 ):
     def storage_listener(transport_msg: Any) -> None:
         result = streamer.handle_transport_message(transport_msg)
         if result.get("handled"):
+            if (
+                result.get("type") == "history_chunk"
+                and result.get("is_last")
+                and node is not None
+                and hasattr(node, "sync_vector_clock")
+            ):
+                node.sync_vector_clock(store.get_latest_vector_clock())
             return
 
         try:
