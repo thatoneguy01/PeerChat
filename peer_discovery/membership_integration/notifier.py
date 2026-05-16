@@ -18,6 +18,15 @@ class _SubscriptionEntry:
     from_version: int
 
 class EventNotifier:
+    """
+    Manages ZooKeeper-style event subscriptions for membership changes.
+
+    Note on concurrency: Dispatch is currently synchronous. This is an intentional
+    simplification for this project. If a subscriber's callback blocks or runs
+    slowly, it will delay event delivery to subsequent subscribers. In a
+    production system, this would typically use a thread pool or asyncio queue
+    to decouple event production from subscriber consumption.
+    """
     def __init__(self):
         self._subscribers: dict[str, _SubscriptionEntry] = {}
 

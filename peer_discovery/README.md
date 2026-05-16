@@ -107,7 +107,7 @@ handle = service.subscribe_membership_events(on_event)
 | Single Source of Truth | Yes — The `MembershipEventLog` acts as the unquestionable append-only ledger of state changes. |
 | Cryptographic Security | Yes — Joins are validated with RSA, and snapshots are encrypted with AES-GCM. |
 | Deterministic State | Yes — The `MembershipSnapshot` is a materialized view derived strictly by applying the event log in order. |
-| Event Notifications | Yes — Subscribers are notified sequentially of valid membership transitions via `EventNotifier`. |
+| Event Notifications | Yes — Subscribers are notified sequentially of valid membership transitions via `EventNotifier` (note: synchronous dispatch, so slow callbacks block others). |
 | Fast Local Reads | Yes — `get_membership_snapshot()` provides an O(1) in-memory lookup. |
 | P2P Resilience | Yes — State is replicated via Gossip, and duplicate frames are safely ignored. |
 
