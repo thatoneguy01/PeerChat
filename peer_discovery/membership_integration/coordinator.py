@@ -4,6 +4,7 @@ MembershipCoordinator (orchestrator)
 
 import time
 import logging
+import uuid
 from peer_discovery.membership.models import *
 from peer_discovery.membership.event_log import MembershipEventLog
 from peer_discovery.membership.snapshot import MembershipSnapshot
@@ -49,6 +50,7 @@ class MembershipCoordinator:
         self._presence = PresenceManager(on_state_change=self._handle_presence_change)
         self._join_validator = None
         self._running = False
+        self._enable_tracing = enable_tracing
 
     def register_join_validator(self, validator) -> None:
         self._join_validator = validator
@@ -72,6 +74,8 @@ class MembershipCoordinator:
                     EventType.JOIN_REJECTED, user_id, source="coordinator", term=1, display_name=display_name
                 )
                 self._snapshot.apply_event(event)
+                delta = MembershipDelta(type="rejected", user_id=user_id, event=event)
+                self._notifier.dispatch(event, delta)
                 return JoinResult(
                     accepted=False,
                     seq_no=event.seq_no,
@@ -81,8 +85,14 @@ class MembershipCoordinator:
                 )
 
         # Accept join
+        trace_id = uuid.uuid4().hex if self._enable_tracing else None
         event = self._log.append(
-            EventType.JOIN_ACCEPTED, user_id, source="coordinator", term=1, display_name=display_name
+            EventType.JOIN_ACCEPTED,
+            user_id,
+            source="coordinator",
+            term=1,
+            display_name=display_name,
+            trace_id=trace_id,
         )
         delta = self._snapshot.apply_event(event)
         self._notifier.dispatch(event, delta)
