@@ -108,7 +108,26 @@ def test_recovery_from_checkpoint(coordinator, tmp_path):
     assert snap.members["u1"].display_name == "User 1"
 
 def test_history_team_integration_pattern(coordinator):
-    pass
+    """End-to-end: history handler receives JOIN_ACCEPTED, triggers backfill,
+    then calls complete_history_backfill — member reaches ACTIVE."""
+    backfill_calls = []
+
+    def history_handler(user_id, event):
+        """Simulates the history team's callback: starts backfill,
+        replays messages, then signals completion."""
+        backfill_calls.append(user_id)
+        coordinator.handle_start_backfill(user_id)
+        # ... history team replays messages here ...
+        coordinator.handle_complete_backfill(user_id)
+
+    coordinator.register_history_handler(history_handler)
+    result = coordinator.handle_join("u1", "User 1")
+    assert result.accepted
+
+    # The handler should have been called and driven the member to ACTIVE
+    assert backfill_calls == ["u1"]
+    snap = coordinator.get_snapshot()
+    assert snap.members["u1"].state == MemberState.ACTIVE
 
 def test_distribution_team_integration_pattern(coordinator):
     pass

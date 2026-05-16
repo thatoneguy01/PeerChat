@@ -50,6 +50,7 @@ class MembershipCoordinator:
         self._durability = DurabilityManager(storage_dir or ".")
         self._presence = PresenceManager(on_state_change=self._handle_presence_change)
         self._join_validator = None
+        self._history_handler = None
         self._running = False
         self._enable_tracing = enable_tracing
         self._tracer = JoinLifecycleTracer() if enable_tracing else None
@@ -62,6 +63,16 @@ class MembershipCoordinator:
 
     def register_join_validator(self, validator) -> None:
         self._join_validator = validator
+
+    def register_history_handler(self, handler) -> None:
+        """Register a callback the History team provides.
+
+        The handler is called as ``handler(user_id, event)`` immediately after
+        a JOIN_ACCEPTED event is committed.  The history team should start
+        message replay for the user, then call back
+        ``service.complete_history_backfill(user_id)`` when done.
+        """
+        self._history_handler = handler
 
     def handle_join(
         self,
@@ -124,6 +135,14 @@ class MembershipCoordinator:
         self._notifier.dispatch(event, delta)
         self._presence.register_member(user_id)
         self._durability.maybe_checkpoint(self._log, self._snapshot)
+
+        # History team event bridge: notify so they can begin backfill replay
+        if self._history_handler:
+            try:
+                self._history_handler(user_id, event)
+            except Exception as e:
+                logger.warning("History handler failed for %s: %s", user_id, e)
+
         return JoinResult(
             accepted=True,
             seq_no=event.seq_no,

@@ -52,6 +52,15 @@ class MembershipService:
     def register_join_validator(self, validator: Callable) -> None:
         self._coordinator.register_join_validator(validator)
 
+    def register_history_handler(self, handler: Callable) -> None:
+        """Register the History team's backfill handler.
+
+        Called as ``handler(user_id, event)`` after each JOIN_ACCEPTED.
+        The history team should replay messages, then call
+        ``service.complete_history_backfill(user_id)`` when done.
+        """
+        self._coordinator.register_history_handler(handler)
+
     def tick(self) -> None:
         """Periodic maintenance: presence liveness and backfill timeouts."""
         self._coordinator.tick()
