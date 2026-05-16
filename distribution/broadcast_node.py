@@ -28,7 +28,7 @@ import json
 import threading
 import logging
 from dataclasses import replace
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 try:
     import websockets
@@ -41,9 +41,10 @@ from .vector_clock import VectorClock, HoldBackQueue
 
 logger = logging.getLogger(__name__)
 
-ACK_TIMEOUT = 2.0       # seconds to wait for an ACK before retrying
-MAX_RETRIES = 3         # number of delivery attempts per peer
-RETRY_BACKOFF = 0.5     # seconds added per retry (0.5s, 1.0s, 1.5s)
+ACK_TIMEOUT = 2.0           # seconds to wait for an ACK before retrying
+MAX_RETRIES = 3             # number of delivery attempts per peer
+RETRY_BACKOFF = 0.5         # seconds added per retry (0.5s, 1.0s, 1.5s)
+RETRY_FLUSH_INTERVAL = 10.0 # seconds between retry queue flush attempts
 
 
 class BroadcastNode:
@@ -67,6 +68,10 @@ class BroadcastNode:
         self._seen_lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop_event: Optional[asyncio.Event] = None
+        self._thread: Optional[threading.Thread] = None
+
+        self._retry_queue: Dict[str, List[Message]] = {}
+        self._retry_lock = threading.Lock()
 
         self._vc = VectorClock()
         self._hold_back = HoldBackQueue()
@@ -78,13 +83,19 @@ class BroadcastNode:
         if websockets is None:
             raise RuntimeError("websockets is required; install with: pip install -r requirements.txt")
         self._loop = asyncio.new_event_loop()
-        threading.Thread(target=self._run_loop, daemon=True).start()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
         logger.info("BroadcastNode starting on ws://%s:%d", self.host, self.port)
 
     def stop(self) -> None:
-        """Shut down the WebSocket server."""
+        """Shut down the WebSocket server and wait for the port to be fully released."""
         if self._loop and self._stop_event:
             self._loop.call_soon_threadsafe(self._stop_event.set)
+        if self._thread:
+            self._thread.join(timeout=5.0)
+        self._loop = None
+        self._stop_event = None
+        self._thread = None
 
     def broadcast(self, message: Message) -> None:
         """
@@ -159,17 +170,31 @@ class BroadcastNode:
         self._stop_event = asyncio.Event()
         async with websockets.serve(self._handle_ws, self.host, self.port):
             logger.info("BroadcastNode listening on ws://%s:%d", self.host, self.port)
+            retry_task = asyncio.ensure_future(self._retry_background_task())
+            hello_task = asyncio.ensure_future(self._send_hello_to_all_peers())
             await self._stop_event.wait()
+            retry_task.cancel()
+            hello_task.cancel()
+            await asyncio.gather(retry_task, hello_task, return_exceptions=True)
 
     # ── Incoming message handling ─────────────────────────────────────────────
 
     async def _handle_ws(self, websocket) -> None:
-        """Receive a message, process it, and send an ACK back to the sender."""
+        """Route incoming frames: handshake messages or chat messages."""
         try:
             async for raw in websocket:
+                data = json.loads(raw)
+                msg_type = data.get("type")
+                if msg_type == "hello":
+                    await websocket.send(json.dumps({"type": "hello_ack", "sender": self.address}))
+                    logger.debug("hello from %s — sent hello_ack", data.get("sender"))
+                    continue
+                if msg_type == "hello_ack":
+                    logger.info("Two-way link confirmed with %s", data.get("sender"))
+                    continue
                 message = Message.from_json(raw)
-                await self._receive(message)
                 await websocket.send(json.dumps({"ack": message.id}))
+                asyncio.ensure_future(self._receive(message))
         except Exception as exc:
             if websockets is not None and isinstance(exc, websockets.ConnectionClosed):
                 return
@@ -224,10 +249,13 @@ class BroadcastNode:
         targets = self._peers_excluding(message.sender)
         await asyncio.gather(*[self._send_with_retry(h, p, message) for h, p in targets])
 
-    async def _send_with_retry(self, host: str, port: int, message: Message) -> None:
+    async def _send_with_retry(
+        self, host: str, port: int, message: Message, *, queue_on_fail: bool = True
+    ) -> bool:
         """
-        Deliver one message to one peer.
-        Retries up to MAX_RETRIES times if no ACK is received within ACK_TIMEOUT.
+        Deliver one message to one peer. Returns True on success.
+        On total failure, queues the message for later retry if queue_on_fail is True.
+        Pass queue_on_fail=False when flushing the retry queue to avoid re-queuing.
         """
         uri = f"ws://{host}:{port}"
         if websockets is None:
@@ -240,7 +268,7 @@ class BroadcastNode:
                     ack = json.loads(ack_raw)
                     if ack.get("ack") == message.id:
                         logger.debug("ACK received from %s:%d", host, port)
-                        return                  # delivery confirmed
+                        return True
             except Exception as exc:
                 logger.debug(
                     "Attempt %d/%d to %s:%d failed — %s", attempt, MAX_RETRIES, host, port, exc
@@ -248,8 +276,85 @@ class BroadcastNode:
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(RETRY_BACKOFF * attempt)
 
-        logger.warning("Could not deliver message %s to %s:%d after %d attempts",
-                       message.id[:8], host, port, MAX_RETRIES)
+        if queue_on_fail:
+            peer_key = f"{host}:{port}"
+            with self._retry_lock:
+                self._retry_queue.setdefault(peer_key, []).append(message)
+            logger.warning(
+                "Queued message %s for %s:%d — peer unreachable, will retry when back online",
+                message.id[:8], host, port,
+            )
+        else:
+            logger.warning(
+                "Could not deliver message %s to %s:%d after %d attempts",
+                message.id[:8], host, port, MAX_RETRIES,
+            )
+        return False
+
+    # ── Reconnect / handshake / retry queue ──────────────────────────────────
+
+    async def _send_hello_to_all_peers(self) -> None:
+        """Send hello to every known peer after startup to confirm two-way connectivity."""
+        await asyncio.sleep(0.5)  # let the server finish binding first
+        for host, port in self.peer_registry.get_peers():
+            asyncio.ensure_future(self._do_handshake(host, port))
+
+    async def _do_handshake(self, host: str, port: int) -> None:
+        """
+        Open a short-lived connection to one peer, exchange hello/hello_ack, and
+        confirm both directions are working.  On success, flush any messages queued
+        for that peer while it was offline.
+        """
+        uri = f"ws://{host}:{port}"
+        try:
+            async with websockets.connect(uri, open_timeout=2, close_timeout=2) as ws:
+                await ws.send(json.dumps({"type": "hello", "sender": self.address}))
+                raw = await asyncio.wait_for(ws.recv(), timeout=ACK_TIMEOUT)
+                data = json.loads(raw)
+                if data.get("type") == "hello_ack":
+                    logger.info("Two-way link confirmed with %s:%d", host, port)
+                    asyncio.ensure_future(self._flush_peer_retry_queue(host, port))
+                else:
+                    logger.warning(
+                        "Unexpected handshake response from %s:%d: %s", host, port, data
+                    )
+        except Exception as exc:
+            logger.warning("Handshake with %s:%d failed — %s", host, port, exc)
+
+    async def _retry_background_task(self) -> None:
+        """Every RETRY_FLUSH_INTERVAL seconds, attempt to flush queued messages for offline peers."""
+        while not self._stop_event.is_set():
+            await asyncio.sleep(RETRY_FLUSH_INTERVAL)
+            with self._retry_lock:
+                pending = [k for k, v in self._retry_queue.items() if v]
+            for peer_key in pending:
+                host, port_str = peer_key.rsplit(":", 1)
+                asyncio.ensure_future(self._flush_peer_retry_queue(host, int(port_str)))
+
+    async def _flush_peer_retry_queue(self, host: str, port: int) -> None:
+        """
+        Try to deliver all messages queued for one peer.
+        Clears the queue optimistically; re-queues anything that still fails.
+        """
+        peer_key = f"{host}:{port}"
+        with self._retry_lock:
+            messages = list(self._retry_queue.pop(peer_key, []))
+        if not messages:
+            return
+        flushed = 0
+        for i, msg in enumerate(messages):
+            success = await self._send_with_retry(host, port, msg, queue_on_fail=False)
+            if success:
+                flushed += 1
+            else:
+                still_failed = messages[i:]
+                with self._retry_lock:
+                    self._retry_queue[peer_key] = (
+                        still_failed + self._retry_queue.get(peer_key, [])
+                    )
+                break
+        if flushed:
+            logger.info("Flushed %d queued messages to %s:%d", flushed, host, port)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

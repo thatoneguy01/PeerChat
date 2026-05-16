@@ -4,12 +4,14 @@ MembershipCoordinator (orchestrator)
 
 import time
 import logging
+import uuid
 from peer_discovery.membership.models import *
 from peer_discovery.membership.event_log import MembershipEventLog
 from peer_discovery.membership.snapshot import MembershipSnapshot
 from peer_discovery.membership.duplicate_guard import DuplicateGuard
 from peer_discovery.membership.durability import DurabilityManager
 from peer_discovery.membership_integration.notifier import EventNotifier
+from peer_discovery.membership_integration.tracer import JoinLifecycleTracer
 from peer_discovery.membership.presence import PresenceManager
 
 logger = logging.getLogger(__name__)
@@ -48,12 +50,37 @@ class MembershipCoordinator:
         self._durability = DurabilityManager(storage_dir or ".")
         self._presence = PresenceManager(on_state_change=self._handle_presence_change)
         self._join_validator = None
+        self._history_handler = None
         self._running = False
+        self._enable_tracing = enable_tracing
+        self._tracer = JoinLifecycleTracer() if enable_tracing else None
+        self._user_trace_ids: dict[str, str] = {}  # user_id → active trace_id
+
+    @property
+    def tracer(self) -> JoinLifecycleTracer | None:
+        """Access the lifecycle tracer (None when tracing is disabled)."""
+        return self._tracer
 
     def register_join_validator(self, validator) -> None:
         self._join_validator = validator
 
-    def handle_join(self, user_id: str, display_name: str) -> JoinResult:
+    def register_history_handler(self, handler) -> None:
+        """Register a callback the History team provides.
+
+        The handler is called as ``handler(user_id, event)`` immediately after
+        a JOIN_ACCEPTED event is committed.  The history team should start
+        message replay for the user, then call back
+        ``service.complete_history_backfill(user_id)`` when done.
+        """
+        self._history_handler = handler
+
+    def handle_join(
+        self,
+        user_id: str,
+        display_name: str,
+        public_key: bytes | None = None,
+        context: dict | None = None,
+    ) -> JoinResult:
         # Duplicate join check
         if self._duplicate_guard.is_duplicate(user_id, EventType.JOIN_REQUESTED.value):
             return JoinResult(
@@ -66,12 +93,20 @@ class MembershipCoordinator:
 
         # Security validator
         if self._join_validator:
-            result = self._join_validator(user_id, display_name)
+            ctx = context or {
+                "room_id": self._room_id,
+                "source_address": None,
+                "public_key": public_key,
+                "arrived_at": time.time()
+            }
+            result = self._join_validator(user_id, display_name, ctx)
             if hasattr(result, 'accepted') and not result.accepted:
                 event = self._log.append(
                     EventType.JOIN_REJECTED, user_id, source="coordinator", term=1, display_name=display_name
                 )
                 self._snapshot.apply_event(event)
+                delta = MembershipDelta(type="rejected", user_id=user_id, event=event)
+                self._notifier.dispatch(event, delta)
                 return JoinResult(
                     accepted=False,
                     seq_no=event.seq_no,
@@ -81,13 +116,33 @@ class MembershipCoordinator:
                 )
 
         # Accept join
+        trace_id = None
+        if self._tracer:
+            trace_id = self._tracer.start_join_trace(user_id)
+            self._user_trace_ids[user_id] = trace_id
+            self._tracer.record_span(trace_id, "join_accepted")
+
         event = self._log.append(
-            EventType.JOIN_ACCEPTED, user_id, source="coordinator", term=1, display_name=display_name
+            EventType.JOIN_ACCEPTED,
+            user_id,
+            source="coordinator",
+            term=1,
+            display_name=display_name,
+            trace_id=trace_id,
+            public_key=public_key,
         )
         delta = self._snapshot.apply_event(event)
         self._notifier.dispatch(event, delta)
         self._presence.register_member(user_id)
         self._durability.maybe_checkpoint(self._log, self._snapshot)
+
+        # History team event bridge: notify so they can begin backfill replay
+        if self._history_handler:
+            try:
+                self._history_handler(user_id, event)
+            except Exception as e:
+                logger.warning("History handler failed for %s: %s", user_id, e)
+
         return JoinResult(
             accepted=True,
             seq_no=event.seq_no,
@@ -131,6 +186,8 @@ class MembershipCoordinator:
         current = self._snapshot.get_member(user_id)
         if not current or current.state != MemberState.JOINING:
             return
+        if self._tracer and user_id in self._user_trace_ids:
+            self._tracer.record_span(self._user_trace_ids[user_id], "backfill_started")
         event = self._log.append(
             EventType.HISTORY_BACKFILL_STARTED, user_id, source="coordinator", term=1, display_name=current.display_name
         )
@@ -142,6 +199,10 @@ class MembershipCoordinator:
         current = self._snapshot.get_member(user_id)
         if not current or current.state != MemberState.BACKFILLING:
             return
+        if self._tracer and user_id in self._user_trace_ids:
+            tid = self._user_trace_ids.pop(user_id)
+            self._tracer.record_span(tid, "backfill_complete")
+            self._tracer.complete_trace(tid)
         event = self._log.append(
             EventType.HISTORY_BACKFILL_COMPLETE, user_id, source="coordinator", term=1, display_name=current.display_name
         )
@@ -178,7 +239,8 @@ class MembershipCoordinator:
         """Periodic maintenance: drive presence failure detection and
         enforce backfill timeouts.
 
-        Person C wires this into a scheduler (e.g., asyncio loop every ~1s).
+        Wired into a repeating daemon-thread timer by
+        ``MembershipService.start_tick_scheduler()``.
         """
         self._presence.check_liveness()
         self._sweep_backfill_timeouts()
@@ -242,5 +304,55 @@ class MembershipCoordinator:
         self._durability.maybe_checkpoint(self._log, self._snapshot)
 
     def recover(self) -> bool:
-        # Recovery logic (Phase 4+)
+        """Restore persisted state from the most recent durable checkpoint.
+
+        Returns True if recovery succeeded (or no checkpoint was found, which
+        is the normal cold-start path). Returns False only when every
+        checkpoint on disk is corrupt.
+        """
+        result = self._durability.recover(self._room_id)
+        if result is None:
+            # No checkpoint found — fresh start
+            logger.info("No checkpoint found for room %s; starting fresh", self._room_id)
+            return True
+
+        recovered_log, recovered_snapshot = result
+        self._log = recovered_log
+        self._snapshot = recovered_snapshot
+
+        # Re-register surviving members with the presence tracker so
+        # heartbeats and liveness checks work after restart.
+        snap = self._snapshot.get_snapshot()
+        for uid, m in snap.members.items():
+            if m.state in (MemberState.ACTIVE, MemberState.JOINING,
+                           MemberState.BACKFILLING, MemberState.SUSPECTED):
+                self._presence.register_member(uid)
+
+        logger.info(
+            "Recovered room %s from checkpoint (version=%d, seq_no=%d, members=%d)",
+            self._room_id, snap.version, snap.as_of_seq_no, len(snap.members),
+        )
         return True
+
+    def _apply_remote_event(self, event: MembershipEvent) -> None:
+        """Apply a single gossiped event from a remote peer."""
+        local_event = self._log.append_remote(event)
+        delta = self._snapshot.apply_event(local_event)
+        
+        # If it was a state transition, notify subscribers
+        if delta:
+            self._notifier.dispatch(local_event, delta)
+            
+        # Ensure presence knows about the member
+        if local_event.event_type in (EventType.JOIN_ACCEPTED, EventType.HEARTBEAT):
+            self._presence.register_member(local_event.user_id)
+            if local_event.event_type == EventType.HEARTBEAT:
+                self._presence.record_heartbeat(local_event.user_id)
+                
+        # Persist
+        self._durability.maybe_checkpoint(self._log, self._snapshot)
+
+    def _apply_remote_snapshot(self, events: list[MembershipEvent]) -> None:
+        """Apply a batch of events from a SNAPSHOT_RESPONSE."""
+        for event in events:
+            self._apply_remote_event(event)

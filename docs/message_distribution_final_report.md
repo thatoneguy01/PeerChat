@@ -112,16 +112,62 @@ Each person can replace the placeholder text below with their work, tests, issue
 ### 6.1 Asha
 
 **Main work:**  
-TODO
+I designed and built the initial message broadcast system and the multi-node demo that validated it end to end.
+
+The first decision was the broadcast strategy. An earlier sketch of the module used a gossip protocol that picked a random subset of peers to forward each message. That gives probabilistic coverage, not guaranteed coverage, so a peer could be skipped on a given round. For a one-room chat, every peer needs every message. I changed the strategy to broadcast-to-all: when a node originates or forwards a message, it sends to every peer in the registry concurrently. The random fanout is still in the `fanout` parameter signature for compatibility, but it is ignored.
+
+The second decision was the transport. The original design used raw TCP with a 4-byte length prefix for framing. WebSockets are already framed and support full-duplex communication on one connection, which simplified the ACK design. Instead of maintaining a separate return connection, the receiver can send `{"ack": msg_id}` back on the same WebSocket that carried the message.
+
+Once WebSockets were in place, I added guaranteed delivery: the sender waits up to 2 seconds for an ACK before retrying, with up to 3 attempts and a growing backoff (0.5s, 1.0s, 1.5s). If all retries fail, the failure is logged as a warning rather than an exception that stops the broadcast. This means one unreachable peer does not block delivery to all other peers.
+
+The `BroadcastNode` is driven entirely by asyncio. Each node runs its own event loop on a daemon thread, so `broadcast(message)` and `send_to_peer(host, port, message)` are safe to call from synchronous code like a UI handler. Internally they schedule coroutines on the node's loop with `asyncio.run_coroutine_threadsafe`.
+
+For the demo, I wrote a 10-node local simulation using ports 5001–5010. All ten nodes share one `InMemoryRegistry` so each can reach the others. One node sends a single message and the demo counts acknowledgments with a thread-safe counter. The expected output is `10/10 nodes received the message` within a few seconds. The demo also exercises causal ordering by sending messages with intentional delays between nodes and verifying they are delivered in the correct order regardless of arrival timing.
+
+**How Message Broadcast communicates with other systems:**
+
+`BroadcastNode` is the hub that connects all other teams. Every message that enters or leaves the system passes through it. The communication in each direction works as follows.
+
+*Receiving peers from Peer Discovery.*  
+`BroadcastNode` does not manage its own peer list. It holds a reference to a `PeerRegistry` object and calls `get_peers()` each time it needs to forward a message. For local testing, `InMemoryRegistry` (a simple in-memory list) was used. In the full application, Peer Discovery wraps its `MembershipService` in a `MembershipRouter` that implements the same `PeerRegistry` interface and returns currently reachable peers. Because the broadcast code only calls `get_peers()`, it automatically reflects whatever Peer Discovery knows at that moment — new peers are included in the next broadcast, departed peers show up as failed deliveries and are retried then warned about.
+
+*Receiving messages from the UI.*  
+When a user types a message, the UI calls `node.broadcast(message)`. That is the entire interface into Distribution from the UI side. `BroadcastNode` assigns the message a UUID, attaches a vector clock snapshot, marks it as seen, fires the local `on_message` callback so the sending node also displays it, and then forwards it to every peer.
+
+*Delivering messages to Message History.*  
+History needs every live chat message so it can persist them. It registers a listener on `node.on_message`. Every time Distribution delivers a unique message — whether originating locally or arriving from a peer — it calls that listener once. History never needs to touch the WebSocket layer; it just receives a `Message` object from the callback.
+
+*Supporting History recovery with direct send.*  
+When a node comes back online, History needs to replay old messages to it. If those chunks went through the normal `broadcast()` path, every active peer would receive every recovery chunk — one node's catch-up would become unnecessary traffic for everyone. To avoid this, I added `send_to_peer(host, port, message)`: it opens a direct WebSocket connection to exactly one peer and forces `ttl=0` on the message, so the receiver saves it locally without re-broadcasting it. History calls this for each recovery chunk, keeping catch-up traffic between just the two nodes involved.
+
+*Re-syncing causal state after recovery.*  
+After History finishes replaying old messages to a recovering node, Distribution's vector clock is still zeroed. Any live messages that arrived during recovery fail the causal readiness check (built by Shamathmika) and pile up in hold-back. `sync_vector_clock(vc)` accepts the latest clock from the recovered message set, merges it into the local state, and drains the hold-back queue. History calls this once recovery is complete. Without it, a recovered node would display old messages correctly but silently stop showing new ones.
+
+*Carrying Security payloads without modification.*  
+Messages have a `signature` field populated by the Security team before `broadcast()` is called. Distribution forwards the message object as-is over WebSockets. It never reads, modifies, or strips the signed content, so the receiving peer gets the exact bytes that Security signed. Verification happens at the Security layer on the receiving side; Distribution's only responsibility is not to corrupt what it carries.
 
 **Tests / validation:**  
-TODO
+
+- 10-node broadcast demo: one sender, nine receivers, all confirm receipt.
+- Manual WebSocket tests: sent a message while one peer was offline, confirmed the retry log warning fires after three attempts without killing delivery to other peers.
+- Causal ordering demo scenarios: four sequences that send messages from different nodes with racing timestamps, verified that delivery order follows send order not arrival order.
+- Verified that a second send of the same message UUID produces no second delivery and no second forward (deduplication behavior).
 
 **Problems found and fixes:**  
-TODO
+
+1. **ACK timeout fires before forwarding completes, triggering retry storms.**  
+   The original `_handle_ws` sent the ACK only after `_receive()` finished. `_receive()` includes `_forward()`, which can take up to 6 seconds (3 retries × up to 2 seconds each). The upstream sender's ACK_TIMEOUT is 2 seconds, so the sender would retry before the receiver even finished forwarding. Each retry created a new forwarding task, and the tasks piled up until node3 stopped responding. The fix was to send the ACK immediately when the message arrives, then schedule `_receive()` as a background task with `asyncio.ensure_future`. The receiver confirms receipt to the sender right away and does its forwarding work independently.
+
+2. **`python` command not found on macOS.**  
+   macOS ships with Python 3 under `python3`, not `python`. The demo and tests failed until I switched everything to `python3.11` explicitly. The fix was to use `python3.11 -m pip install -r requirements.txt` and run all commands with `python3.11`.
+
+3. **Gossip coverage is not the same as guaranteed delivery.**  
+   The first version of the module used random-fanout gossip. Under light load with few nodes it appeared to work, but coverage is only probabilistic. Switching to broadcast-to-all with ACK/retry made coverage deterministic for reachable peers.
 
 **What I learned:**  
-TODO
+The hardest part was not writing the code, it was understanding why simple-looking designs fail under real timing. Sending an ACK after forwarding looks like the right order (do the work, then confirm it), but in a distributed system where the sender has its own timeout clock, that sequencing creates a feedback loop. The sender's retry is not a backup, it becomes a second copy of the forwarding work, which triggers more retries from downstream peers. The fix is counterintuitive: confirm receipt immediately and do the work separately, even though that means the ACK does not reflect completed forwarding.
+
+I also learned that a local demo with all nodes on the same machine hides real problems. Network delays, partial failures, and concurrent connections behave differently on a LAN or across machines. The 10-node local demo was enough to validate basic correctness, but the real integration tests mattered more for finding timing bugs.
 
 ---
 
