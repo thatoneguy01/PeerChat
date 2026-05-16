@@ -91,8 +91,21 @@ def test_backfill_timeout(coordinator):
 def test_subscriber_catchup(coordinator):
     pass
 
-def test_recovery_from_checkpoint(coordinator):
-    pass
+def test_recovery_from_checkpoint(coordinator, tmp_path):
+    # Build some state and force a checkpoint
+    coordinator.handle_join("u1", "User 1")
+    coordinator.handle_start_backfill("u1")
+    coordinator.handle_complete_backfill("u1")
+    coordinator._durability.force_checkpoint(coordinator._log, coordinator._snapshot)
+
+    # Create a brand-new coordinator from the same storage dir — simulates restart
+    recovered = MembershipCoordinator("room1", storage_dir=str(tmp_path))
+    assert recovered.recover() is True
+
+    snap = recovered.get_snapshot()
+    assert "u1" in snap.members
+    assert snap.members["u1"].state == MemberState.ACTIVE
+    assert snap.members["u1"].display_name == "User 1"
 
 def test_history_team_integration_pattern(coordinator):
     pass

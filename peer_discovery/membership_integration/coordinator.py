@@ -265,7 +265,34 @@ class MembershipCoordinator:
         self._durability.maybe_checkpoint(self._log, self._snapshot)
 
     def recover(self) -> bool:
-        # Recovery logic (Phase 4+)
+        """Restore persisted state from the most recent durable checkpoint.
+
+        Returns True if recovery succeeded (or no checkpoint was found, which
+        is the normal cold-start path). Returns False only when every
+        checkpoint on disk is corrupt.
+        """
+        result = self._durability.recover(self._room_id)
+        if result is None:
+            # No checkpoint found — fresh start
+            logger.info("No checkpoint found for room %s; starting fresh", self._room_id)
+            return True
+
+        recovered_log, recovered_snapshot = result
+        self._log = recovered_log
+        self._snapshot = recovered_snapshot
+
+        # Re-register surviving members with the presence tracker so
+        # heartbeats and liveness checks work after restart.
+        snap = self._snapshot.get_snapshot()
+        for uid, m in snap.members.items():
+            if m.state in (MemberState.ACTIVE, MemberState.JOINING,
+                           MemberState.BACKFILLING, MemberState.SUSPECTED):
+                self._presence.register_member(uid)
+
+        logger.info(
+            "Recovered room %s from checkpoint (version=%d, seq_no=%d, members=%d)",
+            self._room_id, snap.version, snap.as_of_seq_no, len(snap.members),
+        )
         return True
 
     def _apply_remote_event(self, event: MembershipEvent) -> None:
