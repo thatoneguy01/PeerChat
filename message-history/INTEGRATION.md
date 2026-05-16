@@ -16,11 +16,52 @@ other teams should use it.
 
 ```python
 from storage import (
+    HistoryService,
     LocalMessageStore,
     HistoryChunkStreamer,
     request_missing_history_from_all_peers,
     wire_node,
 )
+```
+
+### `HistoryService`
+
+Use this from `main.py` or app startup code. It is the public service wrapper
+around storage, recovery, listener fan-out, and vector-clock sync.
+
+```python
+from distribution import BroadcastNode, InMemoryRegistry
+from storage import HistoryService
+
+registry = InMemoryRegistry()
+registry.add_peer("127.0.0.1", 5001)
+registry.add_peer("127.0.0.1", 5002)
+
+node = BroadcastNode("127.0.0.1", 5001, registry)
+history = HistoryService(
+    node=node,
+    host="127.0.0.1",
+    port=5001,
+    storage_root="message-history/runtime/5001",
+)
+
+wiring = history.start()
+
+history.request_missing_history()
+messages = wiring.store.get_recent(100)
+vc = wiring.store.get_latest_vector_clock()
+```
+
+`start()` returns `NodeWiring`. Use `wiring.store`, `wiring.streamer`, and
+`wiring.listeners` directly when you need lower-level History objects.
+
+HistoryService does not send chat messages. UI/Distribution should still create
+and broadcast chat messages through `BroadcastNode.broadcast()`. If the app is
+about to broadcast after recovery, it can sync Distribution directly:
+
+```python
+node.sync_vector_clock(wiring.store.get_latest_vector_clock())
+node.broadcast(message)
 ```
 
 ### `LocalMessageStore`
