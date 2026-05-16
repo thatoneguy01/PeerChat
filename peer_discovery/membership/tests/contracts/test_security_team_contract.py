@@ -22,7 +22,7 @@ class TestSecurityTeamValidatorContract:
             service = MembershipService(room_id="test-room", storage_dir=tmp)
             validator_calls: list[tuple[str, str]] = []
 
-            def mock_validator(user_id: str, display_name: str):
+            def mock_validator(user_id: str, display_name: str, context: dict):
                 validator_calls.append((user_id, display_name))
                 return ValidationResult(accepted=True)
 
@@ -45,7 +45,7 @@ class TestSecurityTeamValidatorContract:
 
             service.subscribe_membership_events(capture)
 
-            def rejecting_validator(user_id: str, display_name: str):
+            def rejecting_validator(user_id: str, display_name: str, context: dict):
                 return ValidationResult(accepted=False, reason="user_banned")
 
             service.register_join_validator(rejecting_validator)
