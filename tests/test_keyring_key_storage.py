@@ -1,37 +1,48 @@
 import pytest
 
 from security.key_storage import InMemoryKeyStore
-from security.persistent_key_storage import get_platform_key_storage, PersistentKeyStorageError
+from security.persistent_key_storage import (
+    get_platform_key_storage,
+    PersistentKeyStorageError,
+)
 
 
-def test_keyring_persistent_storage_round_trip():
+def test_keyring_private_key_storage_round_trip():
     persistent_store = get_platform_key_storage()
 
     if persistent_store is None:
         pytest.skip("No persistent key storage backend available")
 
-    key_id = 7
-    key = b"a" * 32
+    private_key = b"fake-private-key-bytes-for-testing"
 
-    persistent_store.delete_group_key()
-    persistent_store.save_group_key(key_id, key)
+    persistent_store.delete_private_key()
+    persistent_store.save_private_key(private_key)
 
-    loaded_key_id, loaded_key = persistent_store.load_group_key()
+    loaded_private_key = persistent_store.load_private_key()
 
-    assert loaded_key_id == key_id
-    assert loaded_key == key
+    assert loaded_private_key == private_key
 
-    persistent_store.delete_group_key()
+    persistent_store.delete_private_key()
 
 
-def test_persistent_storage_rejects_invalid_key_length():
+def test_persistent_storage_rejects_non_bytes_private_key():
     persistent_store = get_platform_key_storage()
 
     if persistent_store is None:
         pytest.skip("No persistent key storage backend available")
 
     with pytest.raises(PersistentKeyStorageError):
-        persistent_store.save_group_key(0, b"short")
+        persistent_store.save_private_key("not bytes")
+
+
+def test_persistent_storage_rejects_empty_private_key():
+    persistent_store = get_platform_key_storage()
+
+    if persistent_store is None:
+        pytest.skip("No persistent key storage backend available")
+
+    with pytest.raises(PersistentKeyStorageError):
+        persistent_store.save_private_key(b"")
 
 
 def test_persistent_storage_to_runtime_store_flow():
@@ -41,18 +52,30 @@ def test_persistent_storage_to_runtime_store_flow():
         pytest.skip("No persistent key storage backend available")
 
     runtime_store = InMemoryKeyStore()
+    private_key = b"fake-private-key-bytes-for-testing"
 
-    key_id = 3
-    key = b"b" * 32
+    persistent_store.delete_private_key()
+    persistent_store.save_private_key(private_key)
 
-    persistent_store.delete_group_key()
-    persistent_store.save_group_key(key_id, key)
+    loaded_private_key = persistent_store.load_private_key()
+    runtime_store.set_private_key(loaded_private_key)
 
-    loaded_key_id, loaded_key = persistent_store.load_group_key()
-    runtime_store.set_active_key(loaded_key_id, loaded_key)
-
-    assert runtime_store.get_active_key_id() == key_id
-    assert runtime_store.get_active_key() == key
+    assert runtime_store.get_private_key() == private_key
 
     runtime_store.clear()
-    persistent_store.delete_group_key()
+    persistent_store.delete_private_key()
+
+
+def test_delete_private_key_removes_stored_key():
+    persistent_store = get_platform_key_storage()
+
+    if persistent_store is None:
+        pytest.skip("No persistent key storage backend available")
+
+    private_key = b"fake-private-key-bytes-for-testing"
+
+    persistent_store.save_private_key(private_key)
+    persistent_store.delete_private_key()
+
+    with pytest.raises(PersistentKeyStorageError):
+        persistent_store.load_private_key()
