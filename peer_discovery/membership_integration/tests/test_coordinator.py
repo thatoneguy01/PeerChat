@@ -25,7 +25,7 @@ def test_join_rejected_by_validator(coordinator):
         def __init__(self):
             self.accepted = False
             self.reason = "denied"
-        def __call__(self, user_id, display_name):
+        def __call__(self, user_id, display_name, context):
             return self
             
     coordinator.register_join_validator(Validator())
@@ -38,6 +38,26 @@ def test_duplicate_join_rejected(coordinator):
     res = coordinator.handle_join("u1", "User 1")
     assert not res.accepted
     assert res.reason == "Duplicate join request"
+
+def test_join_validator_context_and_pubkey(coordinator):
+    captured_context = {}
+    class Validator:
+        def __init__(self):
+            self.accepted = True
+        def __call__(self, user_id, display_name, context):
+            captured_context.update(context)
+            return self
+            
+    coordinator.register_join_validator(Validator())
+    res = coordinator.handle_join("u1", "User 1", public_key=b"test-key", context={"custom": "value"})
+    assert res.accepted
+    
+    # Assert context was passed through to validator
+    assert captured_context["custom"] == "value"
+    
+    # Assert pubkey made it into snapshot
+    snap = coordinator.get_snapshot()
+    assert snap.members["u1"].public_key == b"test-key"
 
 def test_voluntary_leave(coordinator):
     coordinator.handle_join("u1", "User 1")

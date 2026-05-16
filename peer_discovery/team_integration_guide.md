@@ -715,3 +715,30 @@ You don't need to generate trace IDs — the Membership Service creates them aut
 | The Membership Service restarts | Your subscription handle becomes invalid. You need to re-subscribe. | On detecting a disconnection, call `get_membership_snapshot()` and re-subscribe with `from_version`. |
 | You call `leave_member()` for a user already in `LEFT` or `DISCONNECTED` | The call is silently ignored. No duplicate events. | Safe to call idempotently. |
 | Backfill times out before you call `complete_history_backfill()` | Member is auto-transitioned to `DISCONNECTED`. A `DISCONNECT_TIMEOUT` event fires. | You'll receive the `DISCONNECT_TIMEOUT` event in your subscription. Clean up any in-progress backfill state. |
+
+---
+
+## Part 5: Network Team
+
+### Your Relationship with Membership
+
+You own peer discovery, network transport, and cryptographic identity. The Membership Service now supports distributed state synchronization through a Gossip protocol. You wrap the core `MembershipService` with the `DiscoveryNode` to form a distributed P2P network.
+
+### P2P API Additions
+
+The original API remains fully backward-compatible for local teams. For network integration, the following extensions are available:
+
+- `MembershipEvent` and `MemberInfo` now include `public_key` (bytes) and `originator` (str) fields.
+- `service.join_member()` accepts `public_key` and `context` kwargs, which are passed directly to the Security Team's `validate_join` hook.
+- `service.apply_remote_snapshot(events)`: Reconstructs state from a bootstrap peer.
+- `service.apply_remote_event(event)`: Idempotently applies a gossiped event from a remote peer.
+
+### Network Architecture
+
+The `DiscoveryNode` (`peer_discovery.network.discovery_node`) handles the following:
+
+1. **Transport**: TCP sockets with length-prefixed framing (64KB max) and strict 30s read/write timeouts. Thread-per-connection model capped at 20 workers.
+2. **Crypto**: Hybrid encryption (RSA-2048 OAEP for AES key exchange + AES-256-GCM for payload encryption).
+3. **Bootstrap**: A joining node connects to a known peer, submits its RSA public key in a `JOIN_REQUEST`, and if accepted, receives the full event log encrypted with its public key.
+4. **Gossip**: Local state changes are broadcast via `EVENT_BROADCAST`. Duplicate gossip is suppressed via a bounded LRU cache (`seen_event_ids`).
+5. **Presence**: `HeartbeatManager` periodically pings all known peers. The existing `MembershipCoordinator.tick()` sweep translates missed heartbeats into `DISCONNECT_SUSPECTED` and `DISCONNECT_TIMEOUT` events, which are then gossiped to the network.

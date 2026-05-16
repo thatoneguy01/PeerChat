@@ -20,8 +20,16 @@ class MembershipService:
         self._coordinator = MembershipCoordinator(room_id, storage_dir, enable_tracing)
         self._coordinator.recover()
 
-    def join_member(self, user_id: str, display_name: str) -> JoinResult:
-        return self._coordinator.handle_join(user_id, display_name)
+    def join_member(
+        self,
+        user_id: str,
+        display_name: str,
+        public_key: bytes | None = None,
+        context: dict | None = None,
+    ) -> JoinResult:
+        return self._coordinator.handle_join(
+            user_id, display_name, public_key=public_key, context=context
+        )
 
     def leave_member(self, user_id: str) -> None:
         self._coordinator.handle_leave(user_id)
@@ -47,3 +55,11 @@ class MembershipService:
     def tick(self) -> None:
         """Periodic maintenance: presence liveness and backfill timeouts."""
         self._coordinator.tick()
+
+    def apply_remote_event(self, event: 'MembershipEvent') -> None:
+        """Apply a gossiped event from a remote peer."""
+        self._coordinator._apply_remote_event(event)
+
+    def apply_remote_snapshot(self, events: list['MembershipEvent']) -> None:
+        """Apply a batch of events from a SNAPSHOT_RESPONSE."""
+        self._coordinator._apply_remote_snapshot(events)

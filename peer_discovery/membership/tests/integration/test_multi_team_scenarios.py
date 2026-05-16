@@ -14,7 +14,7 @@ class TestFullRoomLifecycle:
     def test_member_joins_backfills_chats_then_leaves(self, tmp_path) -> None:
         service = MembershipService(room_id="test-room", storage_dir=str(tmp_path))
 
-        def validator(user_id: str, display_name: str) -> ValidationResult:
+        def validator(user_id: str, display_name: str, context: dict) -> ValidationResult:
             return ValidationResult(accepted=True)
 
         service.register_join_validator(validator)
@@ -133,7 +133,7 @@ class TestFullRoomLifecycle:
 
         service.subscribe_membership_events(capture)
 
-        def rejector(user_id: str, display_name: str) -> ValidationResult:
+        def rejector(user_id: str, display_name: str, context: dict) -> ValidationResult:
             return ValidationResult(accepted=False, reason="blocked")
 
         service.register_join_validator(rejector)

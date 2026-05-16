@@ -55,7 +55,13 @@ class MembershipCoordinator:
     def register_join_validator(self, validator) -> None:
         self._join_validator = validator
 
-    def handle_join(self, user_id: str, display_name: str) -> JoinResult:
+    def handle_join(
+        self,
+        user_id: str,
+        display_name: str,
+        public_key: bytes | None = None,
+        context: dict | None = None,
+    ) -> JoinResult:
         # Duplicate join check
         if self._duplicate_guard.is_duplicate(user_id, EventType.JOIN_REQUESTED.value):
             return JoinResult(
@@ -68,7 +74,13 @@ class MembershipCoordinator:
 
         # Security validator
         if self._join_validator:
-            result = self._join_validator(user_id, display_name)
+            ctx = context or {
+                "room_id": self._room_id,
+                "source_address": None,
+                "public_key": public_key,
+                "arrived_at": time.time()
+            }
+            result = self._join_validator(user_id, display_name, ctx)
             if hasattr(result, 'accepted') and not result.accepted:
                 event = self._log.append(
                     EventType.JOIN_REJECTED, user_id, source="coordinator", term=1, display_name=display_name
@@ -93,6 +105,7 @@ class MembershipCoordinator:
             term=1,
             display_name=display_name,
             trace_id=trace_id,
+            public_key=public_key,
         )
         delta = self._snapshot.apply_event(event)
         self._notifier.dispatch(event, delta)
@@ -254,3 +267,26 @@ class MembershipCoordinator:
     def recover(self) -> bool:
         # Recovery logic (Phase 4+)
         return True
+
+    def _apply_remote_event(self, event: MembershipEvent) -> None:
+        """Apply a single gossiped event from a remote peer."""
+        local_event = self._log.append_remote(event)
+        delta = self._snapshot.apply_event(local_event)
+        
+        # If it was a state transition, notify subscribers
+        if delta:
+            self._notifier.dispatch(local_event, delta)
+            
+        # Ensure presence knows about the member
+        if local_event.event_type in (EventType.JOIN_ACCEPTED, EventType.HEARTBEAT):
+            self._presence.register_member(local_event.user_id)
+            if local_event.event_type == EventType.HEARTBEAT:
+                self._presence.record_heartbeat(local_event.user_id)
+                
+        # Persist
+        self._durability.maybe_checkpoint(self._log, self._snapshot)
+
+    def _apply_remote_snapshot(self, events: list[MembershipEvent]) -> None:
+        """Apply a batch of events from a SNAPSHOT_RESPONSE."""
+        for event in events:
+            self._apply_remote_event(event)
