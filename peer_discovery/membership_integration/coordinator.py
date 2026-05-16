@@ -11,6 +11,7 @@ from peer_discovery.membership.snapshot import MembershipSnapshot
 from peer_discovery.membership.duplicate_guard import DuplicateGuard
 from peer_discovery.membership.durability import DurabilityManager
 from peer_discovery.membership_integration.notifier import EventNotifier
+from peer_discovery.membership_integration.tracer import JoinLifecycleTracer
 from peer_discovery.membership.presence import PresenceManager
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,13 @@ class MembershipCoordinator:
         self._join_validator = None
         self._running = False
         self._enable_tracing = enable_tracing
+        self._tracer = JoinLifecycleTracer() if enable_tracing else None
+        self._user_trace_ids: dict[str, str] = {}  # user_id → active trace_id
+
+    @property
+    def tracer(self) -> JoinLifecycleTracer | None:
+        """Access the lifecycle tracer (None when tracing is disabled)."""
+        return self._tracer
 
     def register_join_validator(self, validator) -> None:
         self._join_validator = validator
@@ -97,7 +105,12 @@ class MembershipCoordinator:
                 )
 
         # Accept join
-        trace_id = uuid.uuid4().hex if self._enable_tracing else None
+        trace_id = None
+        if self._tracer:
+            trace_id = self._tracer.start_join_trace(user_id)
+            self._user_trace_ids[user_id] = trace_id
+            self._tracer.record_span(trace_id, "join_accepted")
+
         event = self._log.append(
             EventType.JOIN_ACCEPTED,
             user_id,
@@ -154,6 +167,8 @@ class MembershipCoordinator:
         current = self._snapshot.get_member(user_id)
         if not current or current.state != MemberState.JOINING:
             return
+        if self._tracer and user_id in self._user_trace_ids:
+            self._tracer.record_span(self._user_trace_ids[user_id], "backfill_started")
         event = self._log.append(
             EventType.HISTORY_BACKFILL_STARTED, user_id, source="coordinator", term=1, display_name=current.display_name
         )
@@ -165,6 +180,10 @@ class MembershipCoordinator:
         current = self._snapshot.get_member(user_id)
         if not current or current.state != MemberState.BACKFILLING:
             return
+        if self._tracer and user_id in self._user_trace_ids:
+            tid = self._user_trace_ids.pop(user_id)
+            self._tracer.record_span(tid, "backfill_complete")
+            self._tracer.complete_trace(tid)
         event = self._log.append(
             EventType.HISTORY_BACKFILL_COMPLETE, user_id, source="coordinator", term=1, display_name=current.display_name
         )
