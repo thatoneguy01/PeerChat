@@ -216,35 +216,7 @@ Register a listener on `on_message` for logging. Replay backlog to newly-joined 
 - **Seen-set grows without bound.** Fine for demo scale; production would bound by time window or LRU.
 - **Hold-back queue can stall** if a predecessor message is permanently lost. Acceptable here because gossip + retries make permanent loss unlikely at demo scale.
 - **Offline delivery is out of scope.** The History team replays to reconnected peers.
-
----
-
-## Security — hybrid encryption (RSA + AES)
-
-Message confidentiality uses **per-recipient hybrid encryption** (RSA-OAEP + AES-256-GCM) and **RSA-PSS signatures**. See [docs/design-message-encryption.md](docs/design-message-encryption.md).
-
-### Run tests
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Unit + in-process integration
-pytest tests/test_crypto_encrypt.py tests/test_security_encryption.py \
-       tests/test_message_integrity.py tests/test_chat_session_integration.py -v
-
-# Multi-process E2E (3 peers on one machine — like mini Docker)
-python -m e2e.cli run --peers 3
-pytest -m e2e -v
-```
-
-Full SDET guide (manual peers, Docker Compose, control API): **[docs/e2e-testing.md](docs/e2e-testing.md)**.
-
-### Run app with encryption
-
-```bash
-MOCK_DATA_ENABLED=false python main.py
-```
+- **No wire-level encryption.** The Security team signs; encryption is a stretch.
 
 ---
 
