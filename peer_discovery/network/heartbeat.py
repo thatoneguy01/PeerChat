@@ -60,7 +60,11 @@ class HeartbeatManager:
         while self._running:
             try:
                 snap = self.node.service.get_membership_snapshot()
-                active_members = snap.get_active_members()
+                from peer_discovery.membership.models import MemberState
+                active_members = [
+                    uid for uid, m in snap.members.items() 
+                    if m.state == MemberState.ACTIVE
+                ]
                 
                 for member_id in active_members:
                     if member_id == self.node.advertise_address:
