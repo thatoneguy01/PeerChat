@@ -1,3 +1,5 @@
+from cryptography.hazmat.primitives import serialization
+
 class KeyStoreError(Exception):
     # Base exception for key store errors
     pass
@@ -50,6 +52,41 @@ class InMemoryKeyStore:
             raise MissingKeyError("private key is not loaded")
 
         return self._private_key
+    
+
+    def get_public_key_pem(self) -> bytes:
+        """
+        Derive and return the public key PEM from the loaded private key.
+
+        Used by:
+            - Peer Discovery for public key distribution
+            - Message encryption for identifying this node's public key
+            - Signature verification setup
+
+        Raises:
+            MissingKeyError:
+                If no private key is currently loaded.
+
+            InvalidKeyError:
+                If the stored private key bytes cannot be parsed as PEM.
+        """
+
+        try:
+            private_key = serialization.load_pem_private_key(
+                self.get_private_key(),
+                password=None,
+            )
+        except MissingKeyError:
+            raise
+        except Exception as exc:
+            raise InvalidKeyError("failed to parse private key PEM") from exc
+
+        public_key = private_key.public_key()
+
+        return public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
 
 
     def has_private_key(self) -> bool:
