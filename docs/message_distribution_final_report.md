@@ -168,16 +168,7 @@ The second part was loop prevention. Duplicate suppression handles repeated mess
 
 The third part was supporting History recovery. At first, History was using a workaround where recovery chunks could be sent through broadcast with a target-user filter. That technically works, but it wastes network traffic because every peer receives chunks that only one recovering peer needs. I added/validated `send_to_peer(host, port, message)` so History can send recovery chunks directly to one peer. The direct-send path forces `ttl=0`, which means the receiver can save the chunk locally without re-broadcasting old history to everyone.
 
-I also cleaned up an early placeholder folder. I had first created a separate `message_distribution` folder while trying to organize my work locally. Once the repo standardized on the existing `distribution/` package, I removed that placeholder so the repo would not have two confusing locations for the same module.
-
 Finally, I fixed a repo-level testing issue. Message History tests passed when run inside `message-history`, but root `pytest` failed because those tests import `storage` as a local package. I added a small `conftest.py` inside `message-history/tests` so root pytest adds the message-history folder to `sys.path`. This is not a feature change, but it matters because the whole class needs one command that tests the full repo.
-
-The main commits I am counting for my section are:
-
-- `7c4b5f3` — added deduplication and loop-prevention tests and related BroadcastNode behavior updates
-- `71ddb01` — added direct peer send for History replay, plus docs and tests
-- `7d2efa1` — removed the old placeholder `message_distribution` folder
-- `ea6948a` — fixed root pytest for Message History tests and added this report draft
 
 **Tests / validation:**  
 I added and ran tests around the behavior I changed:
@@ -203,10 +194,7 @@ I added and ran tests around the behavior I changed:
 3. **History recovery was too noisy if implemented as broadcast.**  
    Sending old chunks through broadcast would turn one recovering node's catch-up into traffic for every peer. The fix was a direct peer-send API. This reduces recovery traffic from "everyone sees every recovery chunk" to "only the recovering node receives its chunks."
 
-4. **The repo briefly had a confusing extra folder.**  
-   I initially had a separate `message_distribution` placeholder while figuring out where my work should live. After the team standardized on `distribution/`, I removed the placeholder so future code and docs point to one place.
-
-5. **Root tests failed even though module tests passed.**  
+4. **Root tests failed even though module tests passed.**  
    This was a packaging/path issue, not a logic bug. The fix was a local pytest `conftest.py` for Message History tests so root-level pytest sees the local `storage` package.
 
 **What I learned:**  
@@ -214,7 +202,7 @@ The biggest thing I learned is that distributed bugs are often not loud. The pro
 
 I also learned that the API boundary matters a lot. `broadcast()` and `send_to_peer()` seem like small differences, but they represent totally different network behavior. Broadcast is right for live chat. Direct send is right for recovery. Mixing them makes the system harder to reason about and creates unnecessary load.
 
-For the final demo, I think our strongest explanation is that Message Distribution is not just "send over WebSockets." It is the layer that decides when a message is new, whether it should be forwarded, where it should go, and when it is safe to deliver.
+I think our strongest explanation is that Message Distribution is not just "send over WebSockets." It is the layer that decides when a message is new, whether it should be forwarded, where it should go, and when it is safe to deliver.
 
 ---
 
