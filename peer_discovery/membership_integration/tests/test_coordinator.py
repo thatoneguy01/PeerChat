@@ -130,7 +130,59 @@ def test_history_team_integration_pattern(coordinator):
     assert snap.members["u1"].state == MemberState.ACTIVE
 
 def test_distribution_team_integration_pattern(coordinator):
-    pass
+    """Distribution team subscribes to membership events and receives
+    live deltas for join/leave so they can update routing tables."""
+    events_seen = []
+
+    def on_membership_change(event, delta):
+        events_seen.append((delta.type, delta.user_id))
+
+    coordinator.subscribe(on_membership_change)
+    coordinator.handle_join("u1", "User 1")
+    coordinator.handle_start_backfill("u1")
+    coordinator.handle_complete_backfill("u1")
+    coordinator.handle_leave("u1")
+
+    types = [t for t, _ in events_seen]
+    assert "joined" in types
+    assert "active" in types
+    assert "left" in types
 
 def test_security_team_forced_removal(coordinator):
-    pass
+    """Security team registers a ban-list validator that rejects
+    specific users, and can force-remove an already-active member
+    via handle_leave."""
+    banned_users = {"mallory", "eve"}
+
+    class BanListValidator:
+        def __init__(self):
+            self.accepted = True
+            self.reason = None
+
+        def __call__(self, user_id, display_name, context):
+            result = BanListValidator()
+            if user_id in banned_users:
+                result.accepted = False
+                result.reason = f"User {user_id} is banned"
+            return result
+
+    coordinator.register_join_validator(BanListValidator())
+
+    # Banned user gets rejected
+    res = coordinator.handle_join("mallory", "Mallory")
+    assert not res.accepted
+    assert "banned" in res.reason
+
+    # Legit user gets through
+    res = coordinator.handle_join("alice", "Alice")
+    assert res.accepted
+
+    # Drive alice to ACTIVE
+    coordinator.handle_start_backfill("alice")
+    coordinator.handle_complete_backfill("alice")
+    assert coordinator.get_snapshot().members["alice"].state == MemberState.ACTIVE
+
+    # Security team forces removal of an active member
+    coordinator.handle_leave("alice")
+    assert coordinator.get_snapshot().members["alice"].state == MemberState.LEFT
+
