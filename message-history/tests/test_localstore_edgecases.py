@@ -161,7 +161,7 @@ class TestEdgeCases:
         store = LocalMessageStore(snapshot_threshold=3)
         messages = [
             make_message(f"msg-{i:03}", f"msg {i}", seq=i, timestamp=float(i))
-            for i in range(1, 16)
+            for i in range(1, 17)
         ]
         for msg in messages:
             store.save(msg)
@@ -179,16 +179,36 @@ class TestEdgeCases:
             "msg-013",
             "msg-014",
             "msg-015",
+            "msg-016",
         ]
         assert repaired.get_latest_vector_clock() == {}
 
         result = repaired.save_many(messages)
 
-        assert result == {"saved": 9, "duplicates": 6, "invalid": 0}
+        assert result == {"saved": 9, "duplicates": 7, "invalid": 0}
         assert [msg.id for msg in repaired.get_recent()] == [
-            f"msg-{i:03}" for i in range(1, 16)
+            f"msg-{i:03}" for i in range(1, 17)
         ]
-        assert repaired.get_latest_vector_clock() == {"127.0.0.1:5001": 15}
+        assert [
+            path.name
+            for path in sorted(SNAPSHOT_DIR.glob("*.meta.json"))
+        ] == [
+            f"snapshot-{i:04}.meta.json"
+            for i in range(1, 6)
+        ]
+        assert [
+            path.name
+            for path in sorted(SNAPSHOT_DIR.glob("*.jsonl.gz"))
+        ] == [
+            f"snapshot-{i:04}.jsonl.gz"
+            for i in range(1, 6)
+        ]
+        with ACTIVE_LOG.open("r", encoding="utf-8") as f:
+            assert [
+                Message.from_json(line).id
+                for line in f
+            ] == ["msg-016"]
+        assert repaired.get_latest_vector_clock() == {"127.0.0.1:5001": 16}
 
     def test_save_empty_content_message(self):
         """Empty string content is a valid message and should be stored."""

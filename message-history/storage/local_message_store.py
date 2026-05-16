@@ -24,7 +24,7 @@ MSG_ID_INDEX = INDEX_DIR / "message_id.index"
 SENDER_INDEX = INDEX_DIR / "sender_seq.index"
 VC_INDEX = INDEX_DIR / "latest_vector_clock.json"
 RECOVERY_STATE = INDEX_DIR / "recovery_state.json"
-DEFAULT_SNAPSHOT_THRESHOLD = 5
+DEFAULT_SNAPSHOT_THRESHOLD = 3
 
 
 class LocalMessageStore:
@@ -91,6 +91,11 @@ class LocalMessageStore:
             if isinstance(recovery_state, dict)
             else False
         )
+        self._needs_snapshot_rebuild = (
+            bool(recovery_state.get("needs_snapshot_rebuild"))
+            if isinstance(recovery_state, dict)
+            else False
+        )
 
     def _repair_indexes_from_readable_storage(self) -> None:
         """
@@ -140,6 +145,7 @@ class LocalMessageStore:
                     or not loaded_message_ids.issubset(repaired_message_ids)
                 ):
                     self._force_full_recovery_cursor = True
+                    self._needs_snapshot_rebuild = True
                 self._message_ids = repaired_message_ids
                 self._sender_seq = repaired_sender_seq
                 self._latest_vc = repaired_latest_vc
@@ -147,6 +153,7 @@ class LocalMessageStore:
 
             elif storage_damage_detected:
                 self._force_full_recovery_cursor = True
+                self._needs_snapshot_rebuild = True
                 self._flush_indexes()
 
     def _read_json(self, path: Path, default):
@@ -194,7 +201,10 @@ class LocalMessageStore:
                 self._latest_vc[sender] = seq
 
             self._flush_indexes()
-            self._maybe_create_snapshot_unlocked()
+            if self._needs_snapshot_rebuild:
+                self._maybe_rebuild_snapshots_after_recovery_unlocked()
+            else:
+                self._maybe_create_snapshot_unlocked()
 
             return True
 
@@ -227,6 +237,10 @@ class LocalMessageStore:
             else:
                 result["duplicates"] += 1
 
+        with self._lock:
+            if self._needs_snapshot_rebuild:
+                self._maybe_rebuild_snapshots_after_recovery_unlocked()
+
         return result
 
     def has_message(self, message_id: str) -> bool:
@@ -257,7 +271,10 @@ class LocalMessageStore:
         self._write_json(VC_INDEX, self._latest_vc)
         self._write_json(
             RECOVERY_STATE,
-            {"force_full_recovery_cursor": self._force_full_recovery_cursor},
+            {
+                "force_full_recovery_cursor": self._force_full_recovery_cursor,
+                "needs_snapshot_rebuild": self._needs_snapshot_rebuild,
+            },
         )
 
     def _write_json(self, path: Path, data):
@@ -384,23 +401,14 @@ class LocalMessageStore:
             meta_path = SNAPSHOT_DIR / meta_name
 
             payload = "".join(msg.to_json() + "\n" for msg in messages).encode("utf-8")
-
-            tmp_data_path = data_path.with_suffix(data_path.suffix + ".tmp")
-            with gzip.open(tmp_data_path, "wb") as f:
-                f.write(payload)
-            tmp_data_path.replace(data_path)
-
-            checksum = self._sha256_file(data_path)
-            meta = {
-                "snapshot_id": snapshot_id,
-                "created_at": time.time(),
-                "covers_until_vector_clock": self._vector_clock_for_messages(messages),
-                "message_count": len(messages),
-                "checksum": checksum,
-                "data_file": data_name,
-            }
-
-            self._write_json(meta_path, meta)
+            meta = self._write_snapshot_files_unlocked(
+                snapshot_id=snapshot_id,
+                messages=messages,
+                data_path=data_path,
+                meta_path=meta_path,
+                data_name=data_name,
+                payload=payload,
+            )
 
             if compact:
                 ACTIVE_LOG.write_text("", encoding="utf-8")
@@ -416,6 +424,99 @@ class LocalMessageStore:
             return
         if self._active_log_message_count_unlocked() >= self._snapshot_threshold:
             self.create_snapshot(compact=True)
+
+    def _maybe_rebuild_snapshots_after_recovery_unlocked(self) -> None:
+        if self._has_sender_sequence_gaps_unlocked():
+            return
+        self._rebuild_snapshots_from_readable_messages_unlocked()
+
+    def _rebuild_snapshots_from_readable_messages_unlocked(self) -> None:
+        messages = self._read_all_messages_unlocked()
+        if not messages:
+            return
+
+        chunk_size = (
+            self._snapshot_threshold
+            if self._snapshot_threshold is not None and self._snapshot_threshold > 0
+            else len(messages)
+        )
+
+        snapshot_message_count = len(messages)
+        if self._snapshot_threshold is not None and self._snapshot_threshold > 0:
+            snapshot_message_count = (len(messages) // chunk_size) * chunk_size
+
+        self._delete_snapshot_files_unlocked()
+
+        for index, start in enumerate(
+            range(0, snapshot_message_count, chunk_size),
+            start=1,
+        ):
+            snapshot_id = f"snapshot-{index:04d}"
+            data_name = f"{snapshot_id}.jsonl.gz"
+            meta_name = f"{snapshot_id}.meta.json"
+            data_path = SNAPSHOT_DIR / data_name
+            meta_path = SNAPSHOT_DIR / meta_name
+            chunk_messages = messages[start:start + chunk_size]
+            payload = "".join(
+                msg.to_json() + "\n"
+                for msg in chunk_messages
+            ).encode("utf-8")
+            self._write_snapshot_files_unlocked(
+                snapshot_id=snapshot_id,
+                messages=chunk_messages,
+                data_path=data_path,
+                meta_path=meta_path,
+                data_name=data_name,
+                payload=payload,
+            )
+
+        self._write_active_log_messages_unlocked(messages[snapshot_message_count:])
+        self._needs_snapshot_rebuild = False
+        self._force_full_recovery_cursor = False
+        self._rebuild_indexes_unlocked()
+        self._flush_indexes()
+
+    def _write_snapshot_files_unlocked(
+        self,
+        snapshot_id: str,
+        messages: List[Message],
+        data_path: Path,
+        meta_path: Path,
+        data_name: str,
+        payload: bytes,
+    ) -> Dict:
+        tmp_data_path = data_path.with_suffix(data_path.suffix + ".tmp")
+        with gzip.open(tmp_data_path, "wb") as f:
+            f.write(payload)
+        tmp_data_path.replace(data_path)
+
+        checksum = self._sha256_file(data_path)
+        meta = {
+            "snapshot_id": snapshot_id,
+            "created_at": time.time(),
+            "covers_until_vector_clock": self._vector_clock_for_messages(messages),
+            "message_count": len(messages),
+            "checksum": checksum,
+            "data_file": data_name,
+        }
+
+        self._write_json(meta_path, meta)
+        return meta
+
+    def _delete_snapshot_files_unlocked(self) -> None:
+        for pattern in ("*.jsonl.gz", "*.meta.json", "*.tmp"):
+            for path in SNAPSHOT_DIR.glob(pattern):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    continue
+
+    def _write_active_log_messages_unlocked(self, messages: List[Message]) -> None:
+        payload = "".join(msg.to_json() + "\n" for msg in messages)
+        with ACTIVE_LOG.open("w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
 
     def list_snapshots(self) -> List[Dict]:
         """Return snapshot metadata sorted by snapshot id."""
