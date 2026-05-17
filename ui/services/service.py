@@ -53,11 +53,15 @@ class Service:
         if username and not any(u.get("name") == username for u in self._users):
             self._users.append({"name": username, "status": "Online"})
         if (ip == ""):
-            self.discover_service = MembershipService(room_id="default")
-            connected_users = [] #call here to get a list of currently connected users from your discovery mechanism
-            message_history = [] # call here to get recent message history from your message distribution mechanism
+            config = DiscoveryConfig(advertise_address="127.0.0.1:8001", listen_port=8001)
+            self.discover_node = DiscoveryNode(room_id="default", config=config, storage_dir="../storage")
+            self.discover_service = self.discover_node.service
+            self.discover_node.start(display_name=username)
+            mebership_snapshot = self.discover_node.service.get_membership_snapshot()
+            connected_users = [] 
+            message_history = []
         else:
-            config = DiscoveryConfig(advertise_address=f"{get_external_ip()}:8002", listen_port=8002, bootstrap_peers=[f"{ip}:8001"])
+            config = DiscoveryConfig(advertise_address=f"127.0.0.1:8001", listen_port=8001, bootstrap_peers=[f"{ip}:8001"])
             node = DiscoveryNode(room_id="default", config=config, storage_dir="../storage")
             self.discover_node = node
             self.discover_service = self.discover_node.service
@@ -68,7 +72,7 @@ class Service:
             connected_users = [user.display_name for user in mebership_snapshot.members.values()]
             message_history = []
         
-        def handle_membership_event(event):
+        def handle_membership_event(event, delta):
             if event.event_type == EventType.JOIN_ACCEPTED:
                 self.peer_registry.add_peer(event.user_id.split(":")[0], int(event.user_id.split(":")[1]), event.public_key)
                 self.user_connected(event.display_name)
@@ -76,7 +80,7 @@ class Service:
                 self.peer_registry.remove_peer(event.user_id.split(":")[0], int(event.user_id.split(":")[1]), event.public_key)
                 self.user_disconnected(event.display_name)
 
-        self.discover_service.subscribe_membership_events(lambda event: handle_membership_event(event))
+        self.discover_service.subscribe_membership_events(handle_membership_event)
 
         for user in connected_users:
             self._users.append({"name": user.username, "status": "Online"})
