@@ -1,4 +1,3 @@
-from .listeners import Listeners
 from .local_message_store import LocalMessageStore
 from .models import Message
 from .history_service import HistoryService, configure_storage_root
@@ -11,7 +10,6 @@ __all__ = [
     "LocalMessageStore",
     "HistoryChunkStreamer",
     "HistoryService",
-    "Listeners",
     "NodeWiring",
     "configure_storage_root",
     "request_missing_history_from_all_peers",

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from storage import Message, LocalMessageStore
+from message_history.storage import Message, LocalMessageStore
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = BASE_DIR / "logs"

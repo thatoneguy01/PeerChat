@@ -11,8 +11,8 @@ from .models import Message
 
 
 # ── File paths ────────────────────────────────────────────────────────────────
-# This file lives in: message-history/storage/local_message_store.py
-# BASE_DIR becomes:   message-history/
+# This file lives in: message_history/storage/local_message_store.py
+# BASE_DIR becomes:   message_history/
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 LOG_DIR = BASE_DIR / "logs"
