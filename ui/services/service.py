@@ -79,19 +79,18 @@ class Service:
         self._messages.append({"sender": msg.sender, "timestamp": msg.timestamp, "content": msg.content})
         self._refresh("messages", self._messages)
 
-    def user_connected(self, username: str) -> None:
+    def user_connected(self, username: str, ip: str = "0.0.0.0") -> None:
         if not any(u.get("name") == username for u in self._users):
-            self._users.append({"name": username, "status": "Online"})
+            self._users.append({"name": username, "status": "Online", "ip": ip})
         self._refresh("users", self._users)
 
-    def user_disconnected(self, username: str) -> None:
+    def user_disconnected(self, username: str, ip: str = "0.0.0.0") -> None:
         self._users[:] = [u for u in self._users if u.get("name") != username]
         self._refresh("users", self._users)
 
     def connect(self, username: str, ip: str) -> None:
         if username and not any(u.get("name") == username for u in self._users):
-            self._users.append({"name": username, "status": "Online"})
-
+            self._users.append({"name": username, "status": "Online", "ip": ip if ip else "0.0.0.0"})
 
         lan_ip = get_lan_ip()
         listen_port = pick_free_port()
@@ -146,16 +145,11 @@ class Service:
                         # main uses the discovery port for fetching history
                         self.history_service.request_missing_history(peer_addresses=[(host, int(_disc_port))])
 
-                    if event.display_name and not any(
-                        u.get("name") == event.display_name for u in self._users
-                    ):
-                        self._users.append({"name": event.display_name, "status": "Online"})
-                    self._refresh("users", self._users)
+                    self.user_connected(event.display_name, host)
                 elif event.event_type == EventType.LEAVE_CONFIRMED:
                     host, _disc_port = event.user_id.rsplit(":", 1)
                     self.peer_registry.remove_peer(host, self.chat_port)
-                    self._users[:] = [u for u in self._users if u.get("name") != event.display_name]
-                    self._refresh("users", self._users)
+                    self.user_disconnected(event.display_name, host)
             except Exception as e:
                 logger.warning("Membership event handler failed: %s", e)
 
@@ -189,3 +183,10 @@ class Service:
 
         self._refresh("users", self._users)
         self._refresh("messages", self._messages)
+
+    def disconnect(self, username: str) -> None:
+        if self.discover_node:
+            self.discover_node.stop()
+        self.user_disconnected(username, "0.0.0.0")
+        self.discover_node = None
+        self.discover_service = None

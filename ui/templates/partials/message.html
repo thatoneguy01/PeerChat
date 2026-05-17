@@ -1,8 +1,8 @@
-{% set role = message.get('role', 'assistant') %}
-{% set sender = message.get('sender') %}
-{% set sender_label = 'You' if role == 'user' else (sender if sender else 'Peer') %}
-
-<article class="message {{ role }}">
-  <p class="message-meta">{{ sender_label }}</p>
-  <div class="message-body">{{ message.get('content', '') }}</div>
+<article class="message {{ message.role }}">
+  {# Lookup username by IP from the users list #}
+  {% set sender_ip = message.sender or message.sender_ip %}
+  {% set sender_host = sender_ip.split(':')[0] %}
+  {% set sender_name = users_map.get(sender_host) if users_map is defined else "" %}
+  <div class="message-meta">{{ sender_name if sender_name else sender_ip }}</div>
+  <div class="message-body">{{ message.content }}</div>
 </article>
