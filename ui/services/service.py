@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import threading
+import logging
+import tempfile
 from typing import TYPE_CHECKING, Callable
 from time import time
+from flask import current_app, has_app_context
 from .contracts import MessageRecord, UserRecord
 from distribution import Message
 from distribution.peer_registry import PeerRegistry, InMemoryRegistry
@@ -12,6 +14,8 @@ from peer_discovery.network.discovery_node import DiscoveryNode
 from peer_discovery.network.net_utils import get_lan_ip, pick_free_port
 from peer_discovery.membership.models import EventType
 from utils import get_external_ip
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -59,10 +63,16 @@ class Service:
         listen_port = pick_free_port()
         advertise_address = f"{lan_ip}:{listen_port}"
 
+        # Use a fresh on-disk storage dir per connect so stale checkpoints
+        # from prior test runs don't get recovered and confuse the state
+        # machine ("Invalid transition" warnings on re-join).
+        storage_dir = tempfile.mkdtemp(prefix="peerchat_")
+
         if ip == "":
             config = DiscoveryConfig(
                 advertise_address=advertise_address,
                 listen_port=listen_port,
+                bootstrap_timeout=5.0,
             )
         else:
             # Accept either "host" or "host:port" for the seed. If only a
@@ -72,37 +82,68 @@ class Service:
                 advertise_address=advertise_address,
                 listen_port=listen_port,
                 bootstrap_peers=[seed],
+                bootstrap_timeout=5.0,
             )
 
         self.discover_node = DiscoveryNode(
-            room_id="default", config=config, storage_dir="../storage"
+            room_id="default", config=config, storage_dir=storage_dir
         )
         self.discover_service = self.discover_node.service
 
-        # Subscribe BEFORE start() so we catch every JOIN_ACCEPTED as it
-        # arrives during bootstrap (apply_remote_snapshot dispatches each
-        # event through the notifier).
-        def handle_membership_event(event, delta):
-            if event.event_type == EventType.JOIN_ACCEPTED:
-                host, port_str = event.user_id.rsplit(":", 1)
-                self.peer_registry.add_peer(host, int(port_str), event.public_key or b"")
-                self.user_connected(event.display_name)
-            elif event.event_type == EventType.LEAVE_CONFIRMED:
-                host, port_str = event.user_id.rsplit(":", 1)
-                self.peer_registry.remove_peer(host, int(port_str))
-                self.user_disconnected(event.display_name)
+        # Capture the Flask app while we're still inside the request context.
+        # The membership subscriber may fire on a non-request thread (the
+        # discovery listener / tick / heartbeat threads), so the refresh
+        # callbacks (which call render_template) need an app context pushed
+        # manually. Without this, every refresh logs
+        # "Working outside of application context".
+        flask_app = current_app._get_current_object() if has_app_context() else None
 
+        def _refresh(key: str, payload):
+            cb = self._refreshes.get(key)
+            if cb is None:
+                return
+            try:
+                if flask_app is not None:
+                    with flask_app.app_context():
+                        cb(payload)
+                else:
+                    cb(payload)
+            except Exception as e:
+                logger.warning("Refresh callback for %s failed: %s", key, e)
+
+        def handle_membership_event(event, delta):
+            try:
+                if event.event_type == EventType.JOIN_ACCEPTED:
+                    host, port_str = event.user_id.rsplit(":", 1)
+                    self.peer_registry.add_peer(host, int(port_str), event.public_key or b"")
+                    if event.display_name and not any(
+                        u.get("name") == event.display_name for u in self._users
+                    ):
+                        self._users.append({"name": event.display_name, "status": "Online"})
+                    _refresh("users", self._users)
+                elif event.event_type == EventType.LEAVE_CONFIRMED:
+                    host, port_str = event.user_id.rsplit(":", 1)
+                    self.peer_registry.remove_peer(host, int(port_str))
+                    self._users[:] = [u for u in self._users if u.get("name") != event.display_name]
+                    _refresh("users", self._users)
+            except Exception as e:
+                logger.warning("Membership event handler failed: %s", e)
+
+        # Subscribe BEFORE start() so the subscriber catches every event
+        # produced by start() (the local JOIN_ACCEPTED for the seed, or the
+        # snapshot replay for a joiner).
         self.discover_service.subscribe_membership_events(handle_membership_event)
 
-        # Run bootstrap on a background thread so the Flask request returns
-        # immediately. The subscriber above populates the user list
-        # incrementally as JOIN_ACCEPTED events flow in from the snapshot.
-        threading.Thread(
-            target=self.discover_node.start,
-            kwargs={"display_name": username},
-            daemon=True,
-            name="discovery-start",
-        ).start()
+        # Run bootstrap synchronously. Bootstrap completes in <1s on success
+        # and fails in <bootstrap_timeout (5s) if the seed is unreachable —
+        # both fast enough to block the Flask request. Running synchronously
+        # ensures the connect-response render sees the populated user list
+        # (the UI has no SSE/polling; the response render is the only chance
+        # to show the initial roster).
+        try:
+            self.discover_node.start(display_name=username)
+        except Exception as e:
+            logger.warning("DiscoveryNode.start() failed: %s", e)
 
-        self._refreshes.get("users", lambda: None)(self._users)
-        self._refreshes.get("messages", lambda: None)(self._messages)
+        _refresh("users", self._users)
+        _refresh("messages", self._messages)

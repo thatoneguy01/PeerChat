@@ -16,3 +16,7 @@ class DiscoveryConfig:
     # called, DiscoveryNode installs a no-op handler that auto-promotes joiners
     # straight to ACTIVE. Lets a node run without the History team wired in.
     auto_complete_backfill: bool = True
+    # TCP timeout used by the bootstrap client when reaching out to a seed.
+    # Lower this for interactive demos so a missing seed fails fast instead
+    # of hanging the user-visible "connect" request.
+    bootstrap_timeout: float = 30.0
