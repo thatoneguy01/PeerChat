@@ -39,6 +39,11 @@ from .message import Message
 from .peer_registry import PeerRegistry
 from .vector_clock import VectorClock, HoldBackQueue
 
+try:
+    from security import sign as _sign, verify as _verify, register_public_key as _register_pub_key
+except ImportError:
+    _sign = _verify = _register_pub_key = None
+
 logger = logging.getLogger(__name__)
 
 ACK_TIMEOUT = 2.0           # seconds to wait for an ACK before retrying
@@ -209,6 +214,20 @@ class BroadcastNode:
         if not self.deduplicate(message.id):
             return False                        # already seen — stop the cascade
 
+        if message.signature and _verify is not None:
+            sender_parts = message.sender.rsplit(":", 1)
+            has_key = (
+                len(sender_parts) == 2
+                and hasattr(self.peer_registry, "get_pub_key")
+                and bool(self.peer_registry.get_pub_key(sender_parts[0], int(sender_parts[1])))
+            )
+            if has_key and not _verify(message):
+                logger.warning(
+                    "dropping message %s from %s — signature verification failed",
+                    message.id[:8], message.sender,
+                )
+                return False
+
         if self._vc.is_ready(message):
             self._vc.merge(message.vector_clock)
             to_deliver = [message] + self._hold_back.drain(self._vc)
@@ -233,6 +252,11 @@ class BroadcastNode:
             return False
         self._vc.increment(self.address)
         message.vector_clock = self._vc.snapshot()
+        if _sign is not None:
+            try:
+                _sign(message)
+            except RuntimeError:
+                logger.debug("sign skipped: private key not configured")
         if self.on_message:
             self.on_message(message)
         if message.ttl > 0:
@@ -297,7 +321,21 @@ class BroadcastNode:
         """Send hello to every known peer after startup to confirm two-way connectivity."""
         await asyncio.sleep(0.5)  # let the server finish binding first
         for host, port in self.peer_registry.get_peers():
+            self._register_peer_key(host, port)
             asyncio.ensure_future(self._do_handshake(host, port))
+
+    def _register_peer_key(self, host: str, port: int) -> None:
+        """Register a peer's public key with the security module if available."""
+        if _register_pub_key is None:
+            return
+        if not hasattr(self.peer_registry, "get_pub_key"):
+            return
+        pub_key = self.peer_registry.get_pub_key(host, port)
+        if pub_key:
+            try:
+                _register_pub_key(f"{host}:{port}", pub_key.encode())
+            except Exception as exc:
+                logger.warning("could not register pub key for %s:%d — %s", host, port, exc)
 
     async def _do_handshake(self, host: str, port: int) -> None:
         """
