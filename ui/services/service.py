@@ -21,7 +21,7 @@ class Service:
     _BASE_MESSAGES: list[MessageRecord] = []
 
     def __init__(self, refreshes: dict[str, callable]) -> None:
-        self._messages: list[MessageRecord] = self._BASE_MESSAGES
+        self._messages: list[MessageRecord] = []
         self._users: list[UserRecord] = []
         self._refreshes = refreshes
         self.message_out = lambda msg: None
@@ -61,7 +61,7 @@ class Service:
         self._messages.append(
             {"sender": msg.sender, "timestamp": msg.timestamp, "content": display_content}
         )
-        self._refreshes.get("messages", lambda: None)(self._messages)
+        self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
 
     def _recipient_pubkeys(self) -> dict[str, bytes]:
         pubkeys: dict[str, bytes] = {}
@@ -90,18 +90,18 @@ class Service:
         except MissingKeyError:
             return msg.content
 
-    def user_connected(self, username: str) -> None:
+    def user_connected(self, username: str, ip: str = "0.0.0.0") -> None:
         if not any(u.get("name") == username for u in self._users):
-            self._users.append({"name": username, "status": "Online"})
+            self._users.append({"name": username, "status": "Online", "ip": ip})
         self._refreshes.get("users", lambda: None)(self._users)  # trigger a refresh of the users partial
 
-    def user_disconnected(self, username: str) -> None:
+    def user_disconnected(self, username: str, ip: str = "0.0.0.0") -> None:
         self._users[:] = [u for u in self._users if u.get("name") != username]
         self._refreshes.get("users", lambda: None)(self._users)  # trigger a refresh of the users partial
 
     def connect(self, username: str, ip: str) -> None:
         if username and not any(u.get("name") == username for u in self._users):
-            self._users.append({"name": username, "status": "Online"})
+            self._users.append({"name": username, "status": "Online", "ip": ip if ip else "0.0.0.0"})
         if (ip == ""):
             config = DiscoveryConfig(advertise_address="127.0.0.1:8001", listen_port=8001)
             self.discover_node = DiscoveryNode(room_id="default", config=config, storage_dir="../storage")
@@ -109,6 +109,7 @@ class Service:
             self.discover_node.start(display_name=username)
             mebership_snapshot = self.discover_node.service.get_membership_snapshot()
             connected_users = []
+            message_history = []
         else:
             config = DiscoveryConfig(advertise_address=f"127.0.0.1:8001", listen_port=8001, bootstrap_peers=[f"{ip}:8001"])
             node = DiscoveryNode(room_id="default", config=config, storage_dir="../storage")
@@ -120,22 +121,38 @@ class Service:
                 self.peer_registry.add_peer(member.user_id.split(":")[0], int(member.user_id.split(":")[1]), member.public_key)
                 self.history_service.request_missing_history(peer_addresses=[(member.user_id.split(":")[0], int(member.user_id.split(":")[1]))])
             connected_users = [user.display_name for user in mebership_snapshot.members.values()]
-        message_history = self.history_service.get_recent_messages(100)
+            message_history = self.history_service.get_recent_messages(100)
 
         def handle_membership_event(event, delta):
             if event.event_type == EventType.JOIN_ACCEPTED:
                 self.peer_registry.add_peer(event.user_id.split(":")[0], int(event.user_id.split(":")[1]), event.public_key)
                 self.history_service.request_missing_history(peer_addresses=[(event.user_id.split(":")[0], int(event.user_id.split(":")[1]))])
-                self.user_connected(event.display_name)
+                self.user_connected(event.display_name, event.user_id.split(":")[0])
             elif event.event_type == EventType.LEAVE_CONFIRMED:
                 self.peer_registry.remove_peer(event.user_id.split(":")[0], int(event.user_id.split(":")[1]), event.public_key)
-                self.user_disconnected(event.display_name)
+                self.user_disconnected(event.display_name, event.user_id.split(":")[0])
 
         self.discover_service.subscribe_membership_events(handle_membership_event)
 
         for user in connected_users:
-            self._users.append({"name": user.username, "status": "Online"})
+            self._users.append({"name": user.username, "status": "Online", "ip": user.ip})
         for message in message_history:
-            self._messages.append({"sender": message.sender_ip, "timestamp": message.timestamp, "content": message.content})
+            sender = getattr(message, "sender_ip", None) or getattr(message, "sender", "")
+            wire_msg = Message(content=message.content, sender=sender)
+            self._messages.append(
+                {
+                    "role": "assistant",
+                    "sender": sender,
+                    "timestamp": message.timestamp,
+                    "content": self._decrypt_for_display(wire_msg),
+                }
+            )
         self._refreshes.get("users", lambda: None)(self._users)  # trigger a refresh of the users partial
         self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
+
+    def disconnect(self, username: str) -> None:
+        if self.discover_node:
+            self.discover_node.stop()
+        self.user_disconnected(username, "0.0.0.0")
+        self.discover_node = None
+        self.discover_service = None
