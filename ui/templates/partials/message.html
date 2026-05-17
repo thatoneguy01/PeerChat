@@ -1,3 +1,8 @@
-<article class="message {{ message.role }}">
-  <div class="message-body">{{ message.content }}</div>
+{% set role = message.get('role', 'assistant') %}
+{% set sender = message.get('sender') %}
+{% set sender_label = 'You' if role == 'user' else (sender if sender else 'Peer') %}
+
+<article class="message {{ role }}">
+  <p class="message-meta">{{ sender_label }}</p>
+  <div class="message-body">{{ message.get('content', '') }}</div>
 </article>
