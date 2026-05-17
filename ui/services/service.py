@@ -91,6 +91,13 @@ class Service:
         for user in connected_users:
             self._users.append({"name": user.username, "status": "Online"})
         for message in message_history:
-            self._messages.append({"sender": message.sender_ip, "timestamp": message.timestamp, "content": message.content})
+            self._messages.append(
+                {
+                    "role": "assistant",
+                    "sender": message.sender_ip,
+                    "timestamp": message.timestamp,
+                    "content": message.content,
+                }
+            )
         self._refreshes.get("users", lambda: None)(self._users)  # trigger a refresh of the users partial
         self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
