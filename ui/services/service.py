@@ -35,6 +35,30 @@ class Service:
         # peer_registry; if it also changes the BroadcastNode port, it should
         # set chat_service.chat_port to match. Default matches main.py:29.
         self.chat_port = 5678
+        # Captured during connect() so background threads (membership
+        # subscriber, BroadcastNode receive task, heartbeats) can push a
+        # Flask app context before calling refresh callbacks that need it.
+        self._flask_app = None
+
+    def _refresh(self, key: str, payload) -> None:
+        """Invoke a refresh callback safely from any thread.
+
+        Wraps the call in a Flask app context when ``self._flask_app`` is
+        set, so callbacks that use ``render_template`` / ``url_for`` don't
+        crash with "Working outside of application context" when invoked
+        from background threads.
+        """
+        cb = self._refreshes.get(key)
+        if cb is None:
+            return
+        try:
+            if self._flask_app is not None:
+                with self._flask_app.app_context():
+                    cb(payload)
+            else:
+                cb(payload)
+        except Exception as e:
+            logger.warning("Refresh callback for %s failed: %s", key, e)
 
     def get_users(self) -> list[UserRecord]:
         return self._users
@@ -48,16 +72,16 @@ class Service:
 
     def message_received(self, msg: Message) -> None:
         self._messages.append({"sender": msg.sender, "timestamp": msg.timestamp, "content": msg.content})
-        self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
+        self._refresh("messages", self._messages)
 
     def user_connected(self, username: str) -> None:
         if not any(u.get("name") == username for u in self._users):
             self._users.append({"name": username, "status": "Online"})
-        self._refreshes.get("users", lambda: None)(self._users)  # trigger a refresh of the users partial
+        self._refresh("users", self._users)
 
     def user_disconnected(self, username: str) -> None:
         self._users[:] = [u for u in self._users if u.get("name") != username]
-        self._refreshes.get("users", lambda: None)(self._users)  # trigger a refresh of the users partial
+        self._refresh("users", self._users)
 
     def connect(self, username: str, ip: str) -> None:
         if username and not any(u.get("name") == username for u in self._users):
@@ -95,25 +119,12 @@ class Service:
         self.discover_service = self.discover_node.service
 
         # Capture the Flask app while we're still inside the request context.
-        # The membership subscriber may fire on a non-request thread (the
-        # discovery listener / tick / heartbeat threads), so the refresh
-        # callbacks (which call render_template) need an app context pushed
-        # manually. Without this, every refresh logs
-        # "Working outside of application context".
-        flask_app = current_app._get_current_object() if has_app_context() else None
-
-        def _refresh(key: str, payload):
-            cb = self._refreshes.get(key)
-            if cb is None:
-                return
-            try:
-                if flask_app is not None:
-                    with flask_app.app_context():
-                        cb(payload)
-                else:
-                    cb(payload)
-            except Exception as e:
-                logger.warning("Refresh callback for %s failed: %s", key, e)
+        # Membership subscriber, BroadcastNode receive task, and heartbeat
+        # threads all fire from non-request threads. Without an app context
+        # pushed, any callback that calls render_template / url_for / g
+        # raises "Working outside of application context".
+        if has_app_context():
+            self._flask_app = current_app._get_current_object()
 
         def handle_membership_event(event, delta):
             try:
@@ -128,12 +139,12 @@ class Service:
                         u.get("name") == event.display_name for u in self._users
                     ):
                         self._users.append({"name": event.display_name, "status": "Online"})
-                    _refresh("users", self._users)
+                    self._refresh("users", self._users)
                 elif event.event_type == EventType.LEAVE_CONFIRMED:
                     host, _disc_port = event.user_id.rsplit(":", 1)
                     self.peer_registry.remove_peer(host, self.chat_port)
                     self._users[:] = [u for u in self._users if u.get("name") != event.display_name]
-                    _refresh("users", self._users)
+                    self._refresh("users", self._users)
             except Exception as e:
                 logger.warning("Membership event handler failed: %s", e)
 
@@ -153,5 +164,5 @@ class Service:
         except Exception as e:
             logger.warning("DiscoveryNode.start() failed: %s", e)
 
-        _refresh("users", self._users)
-        _refresh("messages", self._messages)
+        self._refresh("users", self._users)
+        self._refresh("messages", self._messages)

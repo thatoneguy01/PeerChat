@@ -133,16 +133,14 @@ class GossipDispatcher:
         self, host: str, port: int, msg: NetworkMessage, target_id: str | None = None,
     ) -> None:
         """Send a message without waiting for a response."""
-        import socket as _socket
-        from peer_discovery.network.framing import send_framed
+        from websockets.sync.client import connect as ws_connect
         from peer_discovery.network.protocol import encode_message
 
         target = target_id or f"{host}:{port}"
+        uri = f"ws://{host}:{port}/"
         try:
-            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
-                sock.settimeout(5.0)
-                sock.connect((host, port))
-                send_framed(sock, encode_message(msg))
+            with ws_connect(uri, open_timeout=5.0, close_timeout=1.0) as ws:
+                ws.send(encode_message(msg))
                 logger.debug("gossip_sent_ok to=%s type=%s", target, msg.message_type.value)
         except Exception as e:
             logger.warning(
