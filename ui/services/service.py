@@ -1,8 +1,24 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Callable
 from time import time
 from .contracts import MessageRecord, UserRecord
 from distribution import Message
+from distribution.peer_registry import PeerRegistry
+from peer_discovery.membership_integration.service import MembershipService
+from peer_discovery.network.config import DiscoveryConfig
+from peer_discovery.network.discovery_node import DiscoveryNode
+from peer_discovery.membership.models import EventType
+from main import get_external_ip
+
+from .contracts import MessageRecord, UserRecord
+from distribution import Message
+from peer_discovery.membership_integration.service import MembershipService
+from peer_discovery.network.config import DiscoveryConfig
+from peer_discovery.network.discovery_node import DiscoveryNode
+from peer_discovery.membership.models import EventType
+from main import get_external_ip
+
 
 
 class Service:
@@ -14,6 +30,9 @@ class Service:
         self._refreshes = refreshes
         self.message_out = lambda content: None
         self.message_in = lambda content, timestamp, sender_ip: None
+        self.discover_node = None
+        self.discover_service = None
+        self.peer_registry = None
 
     def get_users(self) -> list[UserRecord]:
         return self._users
@@ -29,23 +48,44 @@ class Service:
         self._messages.append({"sender": msg.sender_ip, "timestamp": msg.timestamp, "content": msg.content})
         self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
 
-    def user_connected(self, username: str, ip: str) -> None:
-        #call in here from your discovery mechanism when you detect a new user
+    def user_connected(self, username: str) -> None:
         if not any(u.get("name") == username for u in self._users):
             self._users.append({"name": username, "status": "Online"})
         self._refreshes.get("users", lambda: None)(self._users)  # trigger a refresh of the users partial
 
     def user_disconnected(self, username: str) -> None:
-        #call in here from your discovery mechanism when you detect a user has disconnected
         self._users[:] = [u for u in self._users if u.get("name") != username]
         self._refreshes.get("users", lambda: None)(self._users)  # trigger a refresh of the users partial
 
-    def connect(self, username: str) -> None:
+    def connect(self, username: str, ip: str) -> None:
         if username and not any(u.get("name") == username for u in self._users):
             self._users.append({"name": username, "status": "Online"})
-        # Call out here to discovery
-        connected_users = [] #call here to get a list of currently connected users from your discovery mechanism
-        message_history = [] # call here to get recent message history from your message distribution mechanism
+        if (ip == ""):
+            self.discover_service = MembershipService(room_id="default")
+            connected_users = [] #call here to get a list of currently connected users from your discovery mechanism
+            message_history = [] # call here to get recent message history from your message distribution mechanism
+        else:
+            config = DiscoveryConfig(advertise_address=f"{get_external_ip()}:8002", listen_port=8002, bootstrap_peers=[f"{ip}:8001"])
+            node = DiscoveryNode(room_id="default", config=config, storage_gir="../storage")
+            self.discover_node = node
+            self.discover_service = self.discover_node.service
+            self.discover_node.start(display_name=username)
+            mebership_snapshot = self.discover_node.service.get_membership_snapshot()
+            for member in mebership_snapshot.members.values():
+                self.peer_registry.add_peer(member.user_id.split(":")[0], int(member.user_id.split(":")[1]), member.public_key)
+            connected_users = [user.display_name for user in mebership_snapshot.members.values()]
+            message_history = []
+        
+        def handle_membership_event(event):
+            if event.event_type == EventType.JOIN_ACCEPTED:
+                self.peer_registry.add_peer(event.user_id.split(":")[0], int(event.user_id.split(":")[1]), event.public_key)
+                self.user_connected(event.display_name)
+            elif event.event_type == EventType.LEAVE_CONFIRMED:
+                self.peer_registry.remove_peer(event.user_id.split(":")[0], int(event.user_id.split(":")[1]), event.public_key)
+                self.user_disconnected(event.display_name)
+
+        self.discover_service.subscribe_membership_events(lambda event: handle_membership_event(event))
+
         for user in connected_users:
             self._users.append({"name": user.username, "status": "Online"})
         for message in message_history:
