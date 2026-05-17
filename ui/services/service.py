@@ -142,8 +142,13 @@ class Service:
                     self.peer_registry.add_peer(host, self.chat_port, event.public_key or b"")
                     
                     if self.history_service is not None:
-                        # main uses the discovery port for fetching history
-                        self.history_service.request_missing_history(peer_addresses=[(host, int(_disc_port))])
+                        # History recovery goes through Distribution's BroadcastNode
+                        # (send_to_peer), which targets the CHAT port — not the
+                        # discovery port. Sending recovery to the discovery port
+                        # produces "protocol_error: Missing required fields" warnings
+                        # on the remote machine because our discovery listener can't
+                        # parse Distribution's chat-message JSON schema.
+                        self.history_service.request_missing_history(peer_addresses=[(host, self.chat_port)])
 
                     self.user_connected(event.display_name, host)
                 elif event.event_type == EventType.LEAVE_CONFIRMED:
