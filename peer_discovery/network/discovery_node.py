@@ -30,7 +30,7 @@ class DiscoveryNode:
             self.crypto = NullCryptoProvider()
             
         # 3. Initialize transport
-        self.client = TCPClient()
+        self.client = TCPClient(timeout=config.bootstrap_timeout)
         self.listener = TCPListener(
             host="0.0.0.0",
             port=config.listen_port,
