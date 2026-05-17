@@ -168,7 +168,6 @@ class BroadcastNode:
         if websockets is None:
             raise RuntimeError("websockets is required; install with: pip install -r requirements.txt")
         self._stop_event = asyncio.Event()
-        print("About to websocket.serve")
         async with websockets.serve(self._handle_ws, self.host, self.port):
             logger.info("BroadcastNode listening on ws://%s:%d", self.host, self.port)
             retry_task = asyncio.ensure_future(self._retry_background_task())
