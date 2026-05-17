@@ -284,19 +284,33 @@ I think our strongest explanation is that Message Distribution is not just "send
 
 ### 6.5 Manasa
 
-**Main work:**  
-TODO
+Main work:
+I worked on reconnect readiness and recovery reliability for Message Distribution. My focus was making sure a peer that is temporarily offline can come back without losing messages and without needing the whole system to restart.
 
-**Tests / validation:**  
-TODO
+I helped validate the WebSocket startup/shutdown behavior, especially that a node can stop and restart on the same port cleanly. This matters because in a real demo or LAN test, a peer may disconnect, restart, and rejoin using the same address. I also worked with the hello/hello_ack handshake path so a node can confirm that another peer is reachable in both directions before treating it as ready.
 
-**Problems found and fixes:**  
-TODO
+Another part of my work was the retry queue for failed sends. If a peer is offline, `BroadcastNode` should not crash or block the rest of the broadcast. Instead, failed messages are queued for that peer and retried later. When the peer comes back and the handshake succeeds, the queued messages are flushed. This is especially useful for direct recovery sends, because History may need to replay chunks to a node that is not ready yet.
 
-**What I learned:**  
-TODO
+Tests / validation:
+I validated this behavior with reconnect-focused tests:
+  * `test_stop_releases_port_so_node_can_restart_on_same_port`
+  * `test_hello_probe_confirms_two_way_websocket_path`
+  * `test_failed_direct_send_is_queued_and_flushed_after_peer_returns`
 
----
+These tests check that the server releases its port after stopping, the hello probe returns the correct `hello_ack`, and a failed direct send is saved in the retry queue, then delivered once the target peer starts again.
+
+Problems found and fixes:
+  1. Node restart could fail if the old WebSocket server did not release the port cleanly.
+The fix was to make `stop()` signal the event loop, wait for the server thread to finish, and clear the loop/thread state so a new node can bind to the same port.
+
+  2. A peer being listed in the registry does not always mean it is actually reachable.
+The fix was to use a lightweight hello/hello_ack handshake. This gives Distribution a simple readiness check instead of assuming every listed peer is currently online.
+
+  3. Direct recovery messages could be lost if the target peer was offline.
+The fix was to queue failed sends by peer address and flush that queue after the peer reconnects successfully.
+
+What I learned:
+I learned that reconnect logic is an important part of message distribution, not just an edge case. In a peer-to-peer system, peers can leave, restart, or temporarily fail at any time. The system should continue delivering to reachable peers while keeping failed sends recoverable. I also learned that “peer exists” and “peer is ready” are different states, and the handshake/retry queue helped make that distinction clear.
 
 ## 7. References / Sources To Keep
 
