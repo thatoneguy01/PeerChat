@@ -13,7 +13,8 @@ from peer_discovery.network.config import DiscoveryConfig
 from peer_discovery.network.discovery_node import DiscoveryNode
 from peer_discovery.network.net_utils import get_lan_ip, pick_free_port
 from peer_discovery.membership.models import EventType
-from utils import get_external_ip
+from security.key_storage import InMemoryKeyStore, MissingKeyError
+from security.payload_encryption import PayloadEncryptionError, decrypt_payload
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,10 @@ class Service:
     _BASE_MESSAGES: list[MessageRecord] = []
 
     def __init__(self, refreshes: dict[str, callable]) -> None:
-        self._messages: list[MessageRecord] = self._BASE_MESSAGES
+        self._messages: list[MessageRecord] = []
         self._users: list[UserRecord] = []
         self._refreshes = refreshes
-        self.message_out = lambda content: None
+        self.message_out = lambda msg: None
         self.message_in = lambda content, timestamp, sender_ip: None
         self.discover_node = None
         self.discover_service = None
@@ -43,6 +44,8 @@ class Service:
         # subscriber, BroadcastNode receive task, heartbeats) can push a
         # Flask app context before calling refresh callbacks that need it.
         self._flask_app = None
+        self.key_store: InMemoryKeyStore | None = None
+        self.node_address: str = ""
 
     def _refresh(self, key: str, payload) -> None:
         """Invoke a refresh callback safely from any thread.
@@ -71,8 +74,8 @@ class Service:
         return self._messages
 
     def post_message(self, content: str) -> None:
-        # self._messages.append({"timestamp":time(), "content": content})
-        self.message_out(content)
+        msg = Message(content=content, sender=self.node_address or "local")
+        self.message_out(msg)
 
     def use_history(self, history_service) -> None:
         self.history_service = history_service
@@ -80,8 +83,23 @@ class Service:
     def message_received(self, msg: Message) -> None:
         if self.history_service is not None and self.history_service.handle_message(msg).get("handled"):
             return
-        self._messages.append({"sender": msg.sender, "timestamp": msg.timestamp, "content": msg.content})
+        display_content = self._decrypt_for_display(msg)
+        self._messages.append(
+            {"sender": msg.sender, "timestamp": msg.timestamp, "content": display_content}
+        )
         self._refresh("messages", self._messages)
+
+    def _decrypt_for_display(self, msg: Message) -> str:
+        if self.key_store is None or not self.node_address:
+            return msg.content
+        try:
+            private_pem = self.key_store.get_private_key()
+            return decrypt_payload(msg, self.node_address, private_pem).content
+        except PayloadEncryptionError:
+            logger.warning("could not decrypt message %s", msg.id)
+            return "[encrypted]"
+        except MissingKeyError:
+            return msg.content
 
     def user_connected(self, username: str, ip: str = "0.0.0.0") -> None:
         if not any(u.get("name") == username for u in self._users):
@@ -183,12 +201,14 @@ class Service:
         if self.history_service is not None:
             message_history = self.history_service.get_recent_messages(100)
             for message in message_history:
+                sender = getattr(message, "sender", getattr(message, "sender_ip", ""))
+                wire_msg = Message(content=getattr(message, "content", ""), sender=sender)
                 self._messages.append(
                     {
                         "role": "assistant",
-                        "sender": getattr(message, "sender", getattr(message, "sender_ip", "")),
+                        "sender": sender,
                         "timestamp": getattr(message, "timestamp", time()),
-                        "content": getattr(message, "content", ""),
+                        "content": self._decrypt_for_display(wire_msg),
                     }
                 )
 

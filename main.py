@@ -31,6 +31,7 @@ def main():
     lan_ip = get_lan_ip()
     # node = BroadcastNode(host=socket.gethostbyname(socket.gethostname()), port=5020, peer_registry=peer_registry)
     node = BroadcastNode(host=lan_ip, port=5678, peer_registry=peer_registry)
+    node.own_public_key_pem = public_key_pem
     app.chat_service.peer_registry = peer_registry
 
     history = HistoryService(
@@ -41,8 +42,9 @@ def main():
     history.start()
     app.chat_service.use_history(history)
 
+    app.chat_service.node_address = node.address
     node.on_message = lambda msg: app.chat_service.message_received(msg)
-    app.chat_service.message_out = lambda content: node.broadcast(Message(content=content, sender=node.address))
+    app.chat_service.message_out = lambda msg: node.broadcast(msg)
     node.start()
     time.sleep(3)
     
