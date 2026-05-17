@@ -12,3 +12,7 @@ class DiscoveryConfig:
     heartbeat_interval: float = 2.0
     tick_interval: float = 1.0
     enable_crypto: bool = True
+    # When True and no history handler is registered by the time start() is
+    # called, DiscoveryNode installs a no-op handler that auto-promotes joiners
+    # straight to ACTIVE. Lets a node run without the History team wired in.
+    auto_complete_backfill: bool = True
