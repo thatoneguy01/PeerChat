@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from storage import HistoryChunkStreamer, LocalMessageStore, Message
-from storage.recovery_fanout import request_missing_history_from_all_peers
-from storage.recovery_stream import RECOVER_REQUEST
+from message_history.storage import HistoryChunkStreamer, LocalMessageStore, Message
+from message_history.storage.recovery_fanout import request_missing_history_from_all_peers
+from message_history.storage.recovery_stream import RECOVER_REQUEST
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
