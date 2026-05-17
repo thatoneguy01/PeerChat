@@ -35,6 +35,10 @@ class Service:
         # peer_registry; if it also changes the BroadcastNode port, it should
         # set chat_service.chat_port to match. Default matches main.py:29.
         self.chat_port = 5678
+        # The Security module's public key PEM bytes. Set by main.py after
+        # initializing the key store. Passed to DiscoveryConfig so JOIN events
+        # advertise the same key the BroadcastNode signs messages with.
+        self.public_key_pem: bytes | None = None
         # Captured during connect() so background threads (membership
         # subscriber, BroadcastNode receive task, heartbeats) can push a
         # Flask app context before calling refresh callbacks that need it.
@@ -106,6 +110,7 @@ class Service:
                 advertise_address=advertise_address,
                 listen_port=listen_port,
                 bootstrap_timeout=5.0,
+                public_key_override=self.public_key_pem,
             )
         else:
             # Accept either "host" or "host:port" for the seed. If only a
@@ -116,6 +121,7 @@ class Service:
                 listen_port=listen_port,
                 bootstrap_peers=[seed],
                 bootstrap_timeout=5.0,
+                public_key_override=self.public_key_pem,
             )
 
         self.discover_node = DiscoveryNode(

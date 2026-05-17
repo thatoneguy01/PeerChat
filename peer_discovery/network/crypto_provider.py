@@ -29,6 +29,26 @@ class NullCryptoProvider(CryptoProvider):
         return ciphertext
 
 
+class PassthroughCryptoProvider(CryptoProvider):
+    """Advertises an externally-supplied public key (e.g. from the Security
+    module) in JOIN events so all peers learn the correct key for message
+    verification.  Encryption is a no-op — actual message crypto is owned by
+    the Security team and handled in the Distribution layer.
+    """
+
+    def __init__(self, public_key_bytes: bytes):
+        self._pub_bytes = public_key_bytes
+
+    def get_public_key_bytes(self) -> bytes:
+        return self._pub_bytes
+
+    def encrypt_for(self, data: bytes, target_pub_key_bytes: bytes) -> bytes:
+        return data  # no-op: encryption is the Security module's responsibility
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        return ciphertext  # no-op
+
+
 class RSACryptoProvider(CryptoProvider):
     """RSA-2048 provider using AES-256-GCM for hybrid encryption."""
     
