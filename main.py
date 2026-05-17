@@ -25,7 +25,7 @@ def main():
     configure_private_key(key_store.get_private_key())
     app.chat_service.key_store = key_store
     app.chat_service.public_key_pem = public_key_pem
-    
+
     peer_registry = InMemoryRegistry()
     # node = BroadcastNode(host=socket.gethostbyname(socket.gethostname()), port=5020, peer_registry=peer_registry)
     node = BroadcastNode(host="0.0.0.0", port=5678, peer_registry=peer_registry)
@@ -39,8 +39,9 @@ def main():
     history.start()
     app.chat_service.use_history(history)
 
+    app.chat_service.node_address = node.address
     node.on_message = lambda msg: app.chat_service.message_received(msg)
-    app.chat_service.message_out = lambda content: node.broadcast(Message(content=content, sender=node.address))
+    app.chat_service.message_out = lambda msg: node.broadcast(msg)
     node.start()
     time.sleep(3)
     
