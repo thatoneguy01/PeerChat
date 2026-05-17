@@ -9,15 +9,7 @@ from peer_discovery.membership_integration.service import MembershipService
 from peer_discovery.network.config import DiscoveryConfig
 from peer_discovery.network.discovery_node import DiscoveryNode
 from peer_discovery.membership.models import EventType
-from main import get_external_ip
-
-from .contracts import MessageRecord, UserRecord
-from distribution import Message
-from peer_discovery.membership_integration.service import MembershipService
-from peer_discovery.network.config import DiscoveryConfig
-from peer_discovery.network.discovery_node import DiscoveryNode
-from peer_discovery.membership.models import EventType
-from main import get_external_ip
+from utils import get_external_ip
 
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 from flask import Flask, render_template, request, send_from_directory
-from services import create_chat_service
+from ui.services import create_chat_service
 
 
 def create_app() -> Flask:
@@ -52,7 +52,7 @@ def create_app() -> Flask:
     def connect() -> str:
         username = request.form.get("username", "").strip()
         ip = request.form.get("ip", "").strip()
-        chat_service.connect(username)
+        chat_service.connect(username, ip)
         return render_users_and_connect_state(connected=True, username=username, ip=ip)
 
     @app.post("/disconnect")
