@@ -1,4 +1,5 @@
 """Cryptography provider for message encryption and signing."""
+import logging
 import os
 from typing import Protocol
 
@@ -6,6 +7,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+logger = logging.getLogger(__name__)
 
 
 class CryptoProvider(Protocol):
@@ -71,16 +74,20 @@ class RSACryptoProvider(CryptoProvider):
 
     def decrypt(self, ciphertext: bytes) -> bytes:
         if len(ciphertext) < 2:
+            logger.warning("decrypt_failed reason=ciphertext_too_short len=%d", len(ciphertext))
             raise ValueError("Ciphertext too short")
-            
+
         rsa_len = int.from_bytes(ciphertext[:2], "big")
         if len(ciphertext) < 2 + rsa_len:
+            logger.warning(
+                "decrypt_failed reason=truncated rsa_len=%d total_len=%d",
+                rsa_len, len(ciphertext),
+            )
             raise ValueError("Ciphertext truncated")
-            
+
         encrypted_key_material = ciphertext[2:2+rsa_len]
         aes_ciphertext = ciphertext[2+rsa_len:]
-        
-        # 1. Decrypt AES key + nonce
+
         try:
             key_material = self._private_key.decrypt(
                 encrypted_key_material,
@@ -91,17 +98,35 @@ class RSACryptoProvider(CryptoProvider):
                 )
             )
         except ValueError as e:
+            logger.warning(
+                "decrypt_failed reason=rsa_oaep_failed rsa_bytes=%d err=%s — likely "
+                "encrypted with a different public key than ours",
+                rsa_len, e,
+            )
             raise ValueError(f"RSA decryption failed: {e}")
-            
+
         if len(key_material) != 44:
+            logger.warning(
+                "decrypt_failed reason=bad_key_material_length got=%d expected=44",
+                len(key_material),
+            )
             raise ValueError("Invalid key material length")
-            
+
         aes_key = key_material[:32]
         nonce = key_material[32:]
-        
-        # 2. Decrypt payload
+
         aesgcm = AESGCM(aes_key)
         try:
-            return aesgcm.decrypt(nonce, aes_ciphertext, None)
+            plaintext = aesgcm.decrypt(nonce, aes_ciphertext, None)
+            logger.debug(
+                "decrypt_ok plaintext_bytes=%d rsa_bytes=%d aes_bytes=%d",
+                len(plaintext), rsa_len, len(aes_ciphertext),
+            )
+            return plaintext
         except Exception as e:
+            logger.warning(
+                "decrypt_failed reason=aes_gcm_failed aes_bytes=%d err=%s — tag "
+                "mismatch usually means ciphertext was modified in transit",
+                len(aes_ciphertext), e,
+            )
             raise ValueError(f"AES decryption failed: {e}")
