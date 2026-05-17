@@ -18,7 +18,6 @@ from utils import get_external_ip
 logger = logging.getLogger(__name__)
 
 
-
 class Service:
     _BASE_MESSAGES: list[MessageRecord] = []
 
@@ -31,6 +30,7 @@ class Service:
         self.discover_node = None
         self.discover_service = None
         self.peer_registry = InMemoryRegistry()
+        self.history_service = None
         # Port Distribution's BroadcastNode listens on. main.py overrides
         # peer_registry; if it also changes the BroadcastNode port, it should
         # set chat_service.chat_port to match. Default matches main.py:29.
@@ -70,7 +70,12 @@ class Service:
         # self._messages.append({"timestamp":time(), "content": content})
         self.message_out(content)
 
+    def use_history(self, history_service) -> None:
+        self.history_service = history_service
+
     def message_received(self, msg: Message) -> None:
+        if self.history_service is not None and self.history_service.handle_message(msg).get("handled"):
+            return
         self._messages.append({"sender": msg.sender, "timestamp": msg.timestamp, "content": msg.content})
         self._refresh("messages", self._messages)
 
@@ -86,6 +91,7 @@ class Service:
     def connect(self, username: str, ip: str) -> None:
         if username and not any(u.get("name") == username for u in self._users):
             self._users.append({"name": username, "status": "Online"})
+
 
         lan_ip = get_lan_ip()
         listen_port = pick_free_port()
@@ -135,6 +141,11 @@ class Service:
                     # Sending chat to the discovery port produces the
                     # "Incoming frame size 1195725856" (= ASCII "GET ") errors.
                     self.peer_registry.add_peer(host, self.chat_port, event.public_key or b"")
+                    
+                    if self.history_service is not None:
+                        # main uses the discovery port for fetching history
+                        self.history_service.request_missing_history(peer_addresses=[(host, int(_disc_port))])
+
                     if event.display_name and not any(
                         u.get("name") == event.display_name for u in self._users
                     ):
@@ -163,6 +174,18 @@ class Service:
             self.discover_node.start(display_name=username)
         except Exception as e:
             logger.warning("DiscoveryNode.start() failed: %s", e)
+
+        if self.history_service is not None:
+            message_history = self.history_service.get_recent_messages(100)
+            for message in message_history:
+                self._messages.append(
+                    {
+                        "role": "assistant",
+                        "sender": getattr(message, "sender", getattr(message, "sender_ip", "")),
+                        "timestamp": getattr(message, "timestamp", time()),
+                        "content": getattr(message, "content", ""),
+                    }
+                )
 
         self._refresh("users", self._users)
         self._refresh("messages", self._messages)
