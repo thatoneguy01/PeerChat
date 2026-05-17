@@ -5,6 +5,7 @@ from distribution.peer_registry import InMemoryRegistry
 from security.key_storage import InMemoryKeyStore
 from security.persistent_key_storage import get_platform_key_storage
 from security.key_bootstrap import initialize_private_key_store
+from security import configure_private_key
 import threading
 import socket, time
 from utils import get_external_ip
@@ -21,6 +22,7 @@ def main():
     key_store = InMemoryKeyStore()
     persistent_storage = get_platform_key_storage()
     public_key_pem = initialize_private_key_store(key_store, persistent_storage)
+    configure_private_key(key_store.get_private_key())
     app.chat_service.key_store = key_store
     app.chat_service.public_key_pem = public_key_pem
     
