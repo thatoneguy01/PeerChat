@@ -1,10 +1,14 @@
 import shutil
 from pathlib import Path
-from typing import Optional
+from types import SimpleNamespace
+from typing import Any, Optional
 
 from . import local_message_store as store_paths
-from .node_setup import NodeWiring, wire_node
+from .node_setup import NodeWiring, handle_storage_message, wire_node
 from .recovery_fanout import request_missing_history_from_all_peers
+
+
+DEFAULT_RUNTIME_ROOT = Path(__file__).resolve().parent.parent / "runtime"
 
 
 def configure_storage_root(root: Path | str, *, clean: bool = False) -> Path:
@@ -27,7 +31,7 @@ class HistoryService:
     """
     Public service wrapper for History/Recovery integration.
 
-    It owns storage wiring, recovery handling, and listener fan-out.
+    It owns storage wiring and recovery handling.
     """
 
     def __init__(
@@ -43,7 +47,11 @@ class HistoryService:
         self.node = node
         self.host = host
         self.port = port
-        self.storage_root = Path(storage_root) if storage_root is not None else None
+        self.storage_root = (
+            Path(storage_root)
+            if storage_root is not None
+            else DEFAULT_RUNTIME_ROOT / str(port)
+        )
         self.clean_storage = clean_storage
         self.pull_recovery_on_start = pull_recovery_on_start
         self._wiring: Optional[NodeWiring] = None
@@ -52,14 +60,12 @@ class HistoryService:
         if self._wiring is not None:
             return self._wiring
 
-        if self.storage_root is not None:
-            configure_storage_root(self.storage_root, clean=self.clean_storage)
+        configure_storage_root(self.storage_root, clean=self.clean_storage)
 
         self._wiring = wire_node(
             node=self.node,
             host=self.host,
             port=self.port,
-            pull_recovery_on_start=self.pull_recovery_on_start,
         )
         return self._wiring
 
@@ -78,6 +84,24 @@ class HistoryService:
             peer_addresses=peer_addresses,
             transfer_id=transfer_id,
         )
+
+    def get_recent_messages(self, limit: int = 100):
+        """Return recent stored chat messages for UI/backlog display."""
+        return [
+            SimpleNamespace(
+                id=message.id,
+                sender_ip=getattr(message, "sender_ip", None)
+                or getattr(message, "sender", ""),
+                timestamp=message.timestamp,
+                content=message.content,
+            )
+            for message in self._require_started().store.get_recent(limit)
+        ]
+
+    def handle_message(self, msg: Any) -> dict:
+        """Store or handle one delivered transport message."""
+        wiring = self._require_started()
+        return handle_storage_message(wiring.streamer, wiring.store, msg, self.node)
 
     def _require_started(self) -> NodeWiring:
         if self._wiring is None:

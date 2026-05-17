@@ -6,9 +6,9 @@ from typing import Dict
 
 import pytest
 
-from storage import HistoryChunkStreamer, LocalMessageStore
-from storage.node_setup import _make_storage_listener
-from storage.recovery_stream import HISTORY_CHUNK, RECOVER_REQUEST
+from message_history.storage import HistoryChunkStreamer, LocalMessageStore
+from message_history.storage.node_setup import handle_storage_message, wire_node
+from message_history.storage.recovery_stream import HISTORY_CHUNK, RECOVER_REQUEST
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -44,6 +44,16 @@ class FakeNode:
         self.synced_vector_clocks.append(dict(vc))
 
 
+class FakeStartableNode(FakeBroadcaster):
+    def __init__(self):
+        super().__init__()
+        self.start_calls = 0
+        self.on_message = None
+
+    def start(self):
+        self.start_calls += 1
+
+
 @pytest.fixture(autouse=True)
 def clean_storage():
     shutil.rmtree(LOG_DIR, ignore_errors=True)
@@ -71,23 +81,19 @@ def make_streamer_and_store():
 
 def test_chat_message_is_saved():
     streamer, store = make_streamer_and_store()
-
-    listener = _make_storage_listener(streamer, store)
-
     msg = FakeTransportMessage(
         id="msg-1",
         content="hello",
         sender="127.0.0.1:5001",
         vector_clock={"127.0.0.1:5001": 1},
     )
-    listener(msg)
+    handle_storage_message(streamer, store, msg)
 
     assert [m.id for m in store.get_recent()] == ["msg-1"]
 
 
 def test_recovery_chunk_is_not_saved_as_chat():
     streamer, store = make_streamer_and_store()
-    listener = _make_storage_listener(streamer, store)
 
     chunk_payload = {
         "type": HISTORY_CHUNK,
@@ -101,7 +107,7 @@ def test_recovery_chunk_is_not_saved_as_chat():
         content=json.dumps(chunk_payload),
         sender="127.0.0.1:5001",
     )
-    listener(chunk_msg)
+    handle_storage_message(streamer, store, chunk_msg)
 
     assert store.get_recent() == []
 
@@ -109,7 +115,6 @@ def test_recovery_chunk_is_not_saved_as_chat():
 def test_last_recovery_chunk_syncs_distribution_clock_after_save():
     streamer, store = make_streamer_and_store()
     node = FakeNode()
-    listener = _make_storage_listener(streamer, store, node)
 
     chunk_payload = {
         "type": HISTORY_CHUNK,
@@ -128,7 +133,12 @@ def test_last_recovery_chunk_syncs_distribution_clock_after_save():
             }
         ],
     }
-    listener(FakeTransportMessage(id="chunk-1", content=json.dumps(chunk_payload)))
+    handle_storage_message(
+        streamer,
+        store,
+        FakeTransportMessage(id="chunk-1", content=json.dumps(chunk_payload)),
+        node,
+    )
 
     assert [m.id for m in store.get_recent()] == ["msg-1"]
     assert node.synced_vector_clocks == [{"127.0.0.1:5001": 1}]
@@ -137,7 +147,6 @@ def test_last_recovery_chunk_syncs_distribution_clock_after_save():
 def test_non_last_recovery_chunk_does_not_sync_distribution_clock_yet():
     streamer, store = make_streamer_and_store()
     node = FakeNode()
-    listener = _make_storage_listener(streamer, store, node)
 
     chunk_payload = {
         "type": HISTORY_CHUNK,
@@ -156,7 +165,12 @@ def test_non_last_recovery_chunk_does_not_sync_distribution_clock_yet():
             }
         ],
     }
-    listener(FakeTransportMessage(id="chunk-1", content=json.dumps(chunk_payload)))
+    handle_storage_message(
+        streamer,
+        store,
+        FakeTransportMessage(id="chunk-1", content=json.dumps(chunk_payload)),
+        node,
+    )
 
     assert [m.id for m in store.get_recent()] == ["msg-1"]
     assert node.synced_vector_clocks == []
@@ -164,7 +178,6 @@ def test_non_last_recovery_chunk_does_not_sync_distribution_clock_yet():
 
 def test_recover_request_is_not_saved_as_chat():
     streamer, store = make_streamer_and_store()
-    listener = _make_storage_listener(streamer, store)
 
     request_payload = {
         "type": RECOVER_REQUEST,
@@ -179,14 +192,13 @@ def test_recover_request_is_not_saved_as_chat():
         content=json.dumps(request_payload),
         sender="127.0.0.1:5004",
     )
-    listener(request_msg)
+    handle_storage_message(streamer, store, request_msg)
 
     assert store.get_recent() == []
 
 
 def test_storage_listener_handles_chat_without_optional_hooks():
     streamer, store = make_streamer_and_store()
-    listener = _make_storage_listener(streamer, store)
 
     msg = FakeTransportMessage(
         id="msg-X",
@@ -194,5 +206,20 @@ def test_storage_listener_handles_chat_without_optional_hooks():
         sender="127.0.0.1:5001",
         vector_clock={"127.0.0.1:5001": 1},
     )
-    listener(msg)
+    handle_storage_message(streamer, store, msg)
     assert [m.id for m in store.get_recent()] == ["msg-X"]
+
+
+def test_wire_node_does_not_touch_node_runtime_hooks():
+    node = FakeStartableNode()
+
+    wiring = wire_node(
+        node,
+        host="127.0.0.1",
+        port=5001,
+    )
+
+    assert node.start_calls == 0
+    assert node.on_message is None
+    assert isinstance(wiring.store, LocalMessageStore)
+    assert isinstance(wiring.streamer, HistoryChunkStreamer)

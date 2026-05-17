@@ -15,7 +15,7 @@ other teams should use it.
 ## Main Classes And Functions
 
 ```python
-from storage import (
+from message_history.storage import (
     HistoryService,
     LocalMessageStore,
     HistoryChunkStreamer,
@@ -27,11 +27,11 @@ from storage import (
 ### `HistoryService`
 
 Use this from `main.py` or app startup code. It is the public service wrapper
-around storage, recovery, listener fan-out, and vector-clock sync.
+around storage, recovery, and vector-clock sync.
 
 ```python
 from distribution import BroadcastNode, InMemoryRegistry
-from storage import HistoryService
+from message_history.storage import HistoryService
 
 registry = InMemoryRegistry()
 registry.add_peer("127.0.0.1", 5001)
@@ -42,26 +42,31 @@ history = HistoryService(
     node=node,
     host="127.0.0.1",
     port=5001,
-    storage_root="message-history/runtime/5001",
+    storage_root="message_history/runtime/5001",
 )
 
-wiring = history.start()
+history.start()
 
+node.on_message = lambda msg: app.chat_service.message_received(msg)
+node.start()
 history.request_missing_history()
-messages = wiring.store.get_recent(100)
-vc = wiring.store.get_latest_vector_clock()
 ```
 
-`start()` returns `NodeWiring`. Use `wiring.store`, `wiring.streamer`, and
-`wiring.listeners` directly when you need lower-level History objects.
+`HistoryService.start()` sets up storage and recovery. The app still owns
+`node.on_message` and `node.start()`. Call `history.request_missing_history()`
+after `node.start()` so recovery requests are sent after the Distribution event
+loop is ready.
 
-HistoryService does not send chat messages. UI/Distribution should still create
-and broadcast chat messages through `BroadcastNode.broadcast()`. If the app is
-about to broadcast after recovery, it can sync Distribution directly:
+When a message arrives, call `history.handle_message(msg)` before displaying the
+chat message:
 
 ```python
-node.sync_vector_clock(wiring.store.get_latest_vector_clock())
-node.broadcast(message)
+def on_message(msg):
+    if history.handle_message(msg).get("handled"):
+        return
+    app.chat_service.message_received(msg)
+
+node.on_message = on_message
 ```
 
 ### `LocalMessageStore`
@@ -137,23 +142,35 @@ We do not use `broadcast()` for recovery chunks.
 
 ## What Distribution Team Needs To Know
 
-History needs `BroadcastNode.on_message` to receive delivered messages.
+History needs delivered messages from `BroadcastNode.on_message`, but the app
+can keep ownership of the single callback slot.
 
-Use `wire_node()` for simple setup:
+Use `HistoryService` for app integration:
 
 ```python
-wiring = wire_node(
+history = HistoryService(
     node=node,
     host="127.0.0.1",
     port=5002,
 )
+history.start()
 ```
 
-`wire_node()`:
+Then route delivered messages through History before UI display:
+
+```python
+def on_message(msg):
+    if history.handle_message(msg).get("handled"):
+        return
+    ui.message_received(msg)
+```
+
+`history.handle_message()`:
 
 - saves normal chat messages
 - handles recovery messages
-- starts pull recovery on startup by default
+- returns `{"handled": True, ...}` for recovery transport messages so UI does
+  not display chunks as chat
 
 Important:
 
@@ -247,11 +264,11 @@ or make `send_to_peer()` return a future that History can wait on.
 Run History tests:
 
 ```bash
-.venv/bin/python -m pytest -s message-history/tests -q
+.venv/bin/python -m pytest -s message_history/tests -q
 ```
 
 Run full repo tests:
 
 ```bash
-PYTHONPATH=message-history .venv/bin/python -m pytest -s -q
+PYTHONPATH=message_history .venv/bin/python -m pytest -s -q
 ```

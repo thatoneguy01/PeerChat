@@ -12,7 +12,6 @@ from peer_discovery.membership.models import EventType
 from utils import get_external_ip
 
 
-
 class Service:
     _BASE_MESSAGES: list[MessageRecord] = []
 
@@ -25,6 +24,7 @@ class Service:
         self.discover_node = None
         self.discover_service = None
         self.peer_registry = None
+        self.history_service = None
 
     def get_users(self) -> list[UserRecord]:
         return self._users
@@ -36,7 +36,14 @@ class Service:
         # self._messages.append({"timestamp":time(), "content": content})
         self.message_out(content)
 
+    def use_history(self, history_service) -> None:
+        self.history_service = history_service
+
     def message_received(self, msg: Message) -> None:
+        if self.history_service is not None and self.history_service.handle_message(
+            msg
+        ).get("handled"):
+            return
         self._messages.append({"sender": msg.sender_ip, "timestamp": msg.timestamp, "content": msg.content})
         self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
 
@@ -58,8 +65,7 @@ class Service:
             self.discover_service = self.discover_node.service
             self.discover_node.start(display_name=username)
             mebership_snapshot = self.discover_node.service.get_membership_snapshot()
-            connected_users = [] 
-            message_history = []
+            connected_users = []
         else:
             config = DiscoveryConfig(advertise_address=f"127.0.0.1:8001", listen_port=8001, bootstrap_peers=[f"{ip}:8001"])
             node = DiscoveryNode(room_id="default", config=config, storage_dir="../storage")
@@ -70,8 +76,12 @@ class Service:
             for member in mebership_snapshot.members.values():
                 self.peer_registry.add_peer(member.user_id.split(":")[0], int(member.user_id.split(":")[1]), member.public_key)
             connected_users = [user.display_name for user in mebership_snapshot.members.values()]
-            message_history = []
-        
+        message_history = (
+            self.history_service.get_recent_messages(100)
+            if self.history_service is not None
+            else []
+        )
+
         def handle_membership_event(event, delta):
             if event.event_type == EventType.JOIN_ACCEPTED:
                 self.peer_registry.add_peer(event.user_id.split(":")[0], int(event.user_id.split(":")[1]), event.public_key)
