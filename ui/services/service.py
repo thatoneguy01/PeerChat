@@ -18,8 +18,6 @@ from security.payload_encryption import PayloadEncryptionError, decrypt_payload
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 
 class Service:
     _BASE_MESSAGES: list[MessageRecord] = []
@@ -42,6 +40,8 @@ class Service:
         # subscriber, BroadcastNode receive task, heartbeats) can push a
         # Flask app context before calling refresh callbacks that need it.
         self._flask_app = None
+        self.key_store: InMemoryKeyStore | None = None
+        self.node_address: str = ""
 
     def _refresh(self, key: str, payload) -> None:
         """Invoke a refresh callback safely from any thread.
@@ -79,7 +79,10 @@ class Service:
     def message_received(self, msg: Message) -> None:
         if self.history_service is not None and self.history_service.handle_message(msg).get("handled"):
             return
-        self._messages.append({"sender": msg.sender, "timestamp": msg.timestamp, "content": msg.content})
+        display_content = self._decrypt_for_display(msg)
+        self._messages.append(
+            {"sender": msg.sender, "timestamp": msg.timestamp, "content": display_content}
+        )
         self._refresh("messages", self._messages)
 
     def _decrypt_for_display(self, msg: Message) -> str:
@@ -192,12 +195,14 @@ class Service:
         if self.history_service is not None:
             message_history = self.history_service.get_recent_messages(100)
             for message in message_history:
+                sender = getattr(message, "sender", getattr(message, "sender_ip", ""))
+                wire_msg = Message(content=getattr(message, "content", ""), sender=sender)
                 self._messages.append(
                     {
                         "role": "assistant",
-                        "sender": getattr(message, "sender", getattr(message, "sender_ip", "")),
+                        "sender": sender,
                         "timestamp": getattr(message, "timestamp", time()),
-                        "content": getattr(message, "content", ""),
+                        "content": self._decrypt_for_display(wire_msg),
                     }
                 )
 
