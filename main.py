@@ -42,9 +42,11 @@ def main():
     history.start()
     app.chat_service.use_history(history)
 
-    app.chat_service.node_address = node.address
+    app.chat_service.prepare_message = node.decrypt_for_display
     node.on_message = lambda msg: app.chat_service.message_received(msg)
-    app.chat_service.message_out = lambda msg: node.broadcast(msg)
+    app.chat_service.message_out = lambda content: node.broadcast(
+        Message(content=content, sender=node.address)
+    )
     node.start()
     time.sleep(3)
     

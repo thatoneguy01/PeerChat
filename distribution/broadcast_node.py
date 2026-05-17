@@ -41,11 +41,15 @@ from .vector_clock import VectorClock, HoldBackQueue
 
 try:
     from security import sign as _sign, verify as _verify, register_public_key as _register_pub_key
+    from security.message_integrity import get_private_key_pem as _get_private_key_pem
+    from security.payload_encryption import PayloadEncryptionError
+    from security.payload_encryption import decrypt_payload as _decrypt_payload
     from security.payload_encryption import encrypt_payload as _encrypt_payload
     from security.payload_encryption import is_encrypted_content as _is_encrypted_content
 except ImportError:
-    _sign = _verify = _register_pub_key = None
-    _encrypt_payload = _is_encrypted_content = None
+    _sign = _verify = _register_pub_key = _get_private_key_pem = None
+    _encrypt_payload = _decrypt_payload = _is_encrypted_content = None
+    PayloadEncryptionError = Exception  # type: ignore[misc, assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +151,7 @@ class BroadcastNode:
         self._vc.merge(vc)
         for msg in self._hold_back.drain(self._vc):
             if self.on_message:
-                self.on_message(msg)
+                self.on_message(self._message_for_ui(msg))
 
     def deduplicate(self, msg_id: str) -> bool:
         """
@@ -235,7 +239,7 @@ class BroadcastNode:
 
         for msg in to_deliver:
             if self.on_message:
-                self.on_message(msg)
+                self.on_message(self._message_for_ui(msg))
 
         if message.ttl > 0:
             await self._forward(replace(message, ttl=message.ttl - 1))
@@ -255,7 +259,7 @@ class BroadcastNode:
         if not self._sign_outgoing(message):
             return False
         if self.on_message:
-            self.on_message(message)
+            self.on_message(self._message_for_ui(message))
         if message.ttl > 0:
             await self._forward(message)
         return True
@@ -466,6 +470,30 @@ class BroadcastNode:
             return False
 
         return True
+
+    def decrypt_for_display(self, message: Message) -> None:
+        """Decrypt message.content in place (e.g. history replay that never re-broadcasts)."""
+        self._decrypt_into(message)
+
+    def _message_for_ui(self, message: Message) -> Message:
+        """Return a UI copy with decrypted content; wire message stays encrypted for forward."""
+        ui_msg = replace(message)
+        self._decrypt_into(ui_msg)
+        return ui_msg
+
+    def _decrypt_into(self, message: Message) -> None:
+        if _decrypt_payload is None or _is_encrypted_content is None or _get_private_key_pem is None:
+            return
+        if not _is_encrypted_content(message.content):
+            return
+        private_pem = _get_private_key_pem()
+        if not private_pem:
+            return
+        try:
+            _decrypt_payload(message, self.address, private_pem)
+        except PayloadEncryptionError:
+            logger.warning("could not decrypt message %s", message.id)
+            message.content = "[encrypted]"
 
     def _encrypt_outgoing(self, message: Message) -> bool:
         """Encrypt payload before signing when originating from this node."""
