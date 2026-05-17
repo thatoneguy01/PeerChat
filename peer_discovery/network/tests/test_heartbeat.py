@@ -10,7 +10,6 @@ def test_heartbeat_manager_lifecycle(tmp_path):
     config = DiscoveryConfig(
         advertise_address="node_a",
         listen_port=0,
-        enable_crypto=False,
         heartbeat_interval=0.1,
         tick_interval=0.1
     )
@@ -36,8 +35,7 @@ def test_heartbeat_manager_lifecycle(tmp_path):
 def test_handle_incoming_heartbeat_known(tmp_path):
     config = DiscoveryConfig(
         advertise_address="node_a",
-        listen_port=0,
-        enable_crypto=False
+        listen_port=0
     )
     node = DiscoveryNode("room-1", config, str(tmp_path))
     
@@ -66,8 +64,7 @@ def test_handle_incoming_heartbeat_known(tmp_path):
 def test_handle_incoming_heartbeat_unknown(tmp_path):
     config = DiscoveryConfig(
         advertise_address="node_a",
-        listen_port=0,
-        enable_crypto=False
+        listen_port=0
     )
     node = DiscoveryNode("room-1", config, str(tmp_path))
     

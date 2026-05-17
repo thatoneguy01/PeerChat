@@ -1,4 +1,17 @@
-"""Bootstrap logic for joining the network."""
+"""Bootstrap logic for joining the network.
+
+The handshake is plaintext over WebSocket. Nothing on the wire is secret:
+
+  - JOIN_REQUEST carries the joiner's display name and public key. The pubkey
+    is public by definition; that is the whole point of distributing it.
+  - JOIN_RESPONSE carries the current membership event log (which, when
+    applied, hydrates the joiner's snapshot — including every member's
+    public key, address, and state).
+
+Chat-message confidentiality and signing live at the Distribution+Security
+layer, not here. Discovery's job is purely to publish "who is in the room
+and what is their public key."
+"""
 import base64
 import json
 import logging
@@ -26,7 +39,7 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
         res = node.service.join_member(
             user_id=node.advertise_address,
             display_name=display_name,
-            public_key=node.crypto.get_public_key_bytes(),
+            public_key=node.public_key_pem,
         )
         logger.info(
             "bootstrap_seed_join accepted=%s seq_no=%d version=%d reason=%s",
@@ -47,7 +60,7 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
             logger.error("bootstrap_invalid_peer peer=%s expected_format=host:port", peer)
             continue
 
-        pubkey_b64 = base64.b64encode(node.crypto.get_public_key_bytes()).decode()
+        pubkey_b64 = base64.b64encode(node.public_key_pem).decode()
         req = NetworkMessage(
             message_type=MessageType.JOIN_REQUEST,
             sender_id=node.advertise_address,
@@ -56,8 +69,7 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
 
         logger.info(
             "bootstrap_attempt peer=%s sender_id=%s display_name=%s pubkey_bytes=%d",
-            peer, node.advertise_address, display_name,
-            len(node.crypto.get_public_key_bytes()),
+            peer, node.advertise_address, display_name, len(node.public_key_pem),
         )
 
         try:
@@ -71,7 +83,7 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
             continue
 
         if not resp:
-            logger.warning("bootstrap_no_response peer=%s — TCP closed before reply", peer)
+            logger.warning("bootstrap_no_response peer=%s — connection closed before reply", peer)
             continue
 
         if resp.message_type != MessageType.JOIN_RESPONSE:
@@ -87,20 +99,14 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
             logger.error("bootstrap_rejected peer=%s reason=%s", peer, reason)
             return False
 
-        encrypted_snapshot = resp.payload.get("encrypted_snapshot")
-        if not encrypted_snapshot:
-            logger.error("bootstrap_response_missing_snapshot peer=%s", peer)
+        events_data = resp.payload.get("events")
+        if events_data is None:
+            logger.error("bootstrap_response_missing_events peer=%s", peer)
             continue
 
         try:
             from peer_discovery.membership.models import MembershipEvent
 
-            ciphertext = base64.b64decode(encrypted_snapshot)
-            logger.info(
-                "bootstrap_decrypting peer=%s ciphertext_bytes=%d", peer, len(ciphertext),
-            )
-            plaintext = node.crypto.decrypt(ciphertext)
-            events_data = json.loads(plaintext.decode("utf-8"))
             events = [MembershipEvent.from_dict(d) for d in events_data]
 
             logger.info(
@@ -119,8 +125,8 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
 
         except Exception as e:
             logger.error(
-                "bootstrap_decrypt_or_apply_failed peer=%s err=%s — likely "
-                "wrong seed pubkey or snapshot corruption",
+                "bootstrap_apply_failed peer=%s err=%s — likely a "
+                "malformed snapshot payload",
                 peer, e,
             )
             continue
@@ -142,28 +148,27 @@ def handle_join_request(node: 'DiscoveryNode', source_ip: str, msg: NetworkMessa
         source_ip, msg.sender_id, display_name, bool(pk_b64),
     )
 
-    if not pk_b64:
+    # The pubkey is informational — discovery's handshake is plaintext and
+    # doesn't need it for crypto. We still record it on MemberInfo so other
+    # peers (and Distribution's verify()) can look it up. An empty pubkey
+    # means chat verify() will fail for this peer, but discovery itself is
+    # fine; we accept the join with an empty key and log a warning.
+    pub_key = b""
+    if pk_b64:
+        try:
+            pub_key = base64.b64decode(pk_b64)
+        except Exception as e:
+            logger.warning(
+                "join_request_bad_pubkey_b64 source_ip=%s sender_id=%s err=%s — "
+                "accepting join with empty pubkey",
+                source_ip, msg.sender_id, e,
+            )
+            pub_key = b""
+    else:
         logger.warning(
-            "join_request_rejected source_ip=%s sender_id=%s reason=missing_public_key_b64",
+            "join_request_no_pubkey source_ip=%s sender_id=%s — accepting join "
+            "but chat verify() will fail for this peer",
             source_ip, msg.sender_id,
-        )
-        return NetworkMessage(
-            message_type=MessageType.JOIN_RESPONSE,
-            sender_id=node.advertise_address,
-            payload={"status": "rejected", "reason": "Missing public_key_b64"}
-        )
-
-    try:
-        pub_key = base64.b64decode(pk_b64)
-    except Exception as e:
-        logger.warning(
-            "join_request_rejected source_ip=%s sender_id=%s reason=bad_pubkey_b64 err=%s",
-            source_ip, msg.sender_id, e,
-        )
-        return NetworkMessage(
-            message_type=MessageType.JOIN_RESPONSE,
-            sender_id=node.advertise_address,
-            payload={"status": "rejected", "reason": "Invalid public_key encoding"}
         )
 
     context = {
@@ -175,7 +180,7 @@ def handle_join_request(node: 'DiscoveryNode', source_ip: str, msg: NetworkMessa
         user_id=msg.sender_id,
         display_name=display_name,
         public_key=pub_key,
-        context=context
+        context=context,
     )
 
     if not res.accepted:
@@ -186,38 +191,21 @@ def handle_join_request(node: 'DiscoveryNode', source_ip: str, msg: NetworkMessa
         return NetworkMessage(
             message_type=MessageType.JOIN_RESPONSE,
             sender_id=node.advertise_address,
-            payload={"status": "rejected", "reason": res.reason}
+            payload={"status": "rejected", "reason": res.reason},
         )
 
     snap = node.service.get_membership_snapshot()
     events = node.service._coordinator._log.get_events_since(0)
     events_data = [e.to_dict() for e in events]
-    plaintext = json.dumps(events_data).encode("utf-8")
 
     logger.info(
-        "join_request_accepted sender_id=%s seq_no=%d members_now=%d events_to_send=%d "
-        "plaintext_bytes=%d",
-        msg.sender_id, res.seq_no, len(snap.members), len(events), len(plaintext),
+        "join_request_accepted sender_id=%s seq_no=%d members_now=%d events_to_send=%d",
+        msg.sender_id, res.seq_no, len(snap.members), len(events),
     )
 
-    try:
-        ciphertext = node.crypto.encrypt_for(plaintext, pub_key)
-        encrypted_b64 = base64.b64encode(ciphertext).decode()
-    except Exception as e:
-        logger.error(
-            "join_request_encrypt_failed sender_id=%s err=%s — joiner's pubkey "
-            "may be malformed or incompatible",
-            msg.sender_id, e,
-        )
-        return NetworkMessage(
-            message_type=MessageType.JOIN_RESPONSE,
-            sender_id=node.advertise_address,
-            payload={"status": "error", "reason": "Crypto failure on server"}
-        )
-
     logger.info(
-        "join_response_sending to=%s ciphertext_bytes=%d events=%d",
-        msg.sender_id, len(ciphertext), len(events),
+        "join_response_sending to=%s events=%d",
+        msg.sender_id, len(events),
     )
 
     return NetworkMessage(
@@ -225,6 +213,6 @@ def handle_join_request(node: 'DiscoveryNode', source_ip: str, msg: NetworkMessa
         sender_id=node.advertise_address,
         payload={
             "status": "accepted",
-            "encrypted_snapshot": encrypted_b64
-        }
+            "events": events_data,
+        },
     )

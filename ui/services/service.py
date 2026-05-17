@@ -101,10 +101,24 @@ class Service:
         # machine ("Invalid transition" warnings on re-join).
         storage_dir = tempfile.mkdtemp(prefix="peerchat_")
 
+        # Pull our local public key from Security's keystore. main.py sets
+        # ``chat_service.public_key_pem`` during app startup; if it's missing
+        # we fall back to empty bytes (other peers will see an empty pubkey
+        # and Distribution's verify() will reject our chat messages — but
+        # discovery itself still works for the demo).
+        local_pubkey: bytes = getattr(self, "public_key_pem", b"") or b""
+        if not local_pubkey:
+            logger.warning(
+                "connect: chat_service.public_key_pem is not set — Distribution "
+                "verify() will reject this node's chat messages. Check main.py "
+                "wiring (key_store + configure_private_key)."
+            )
+
         if ip == "":
             config = DiscoveryConfig(
                 advertise_address=advertise_address,
                 listen_port=listen_port,
+                public_key_pem=local_pubkey,
                 bootstrap_timeout=5.0,
             )
         else:
@@ -114,6 +128,7 @@ class Service:
             config = DiscoveryConfig(
                 advertise_address=advertise_address,
                 listen_port=listen_port,
+                public_key_pem=local_pubkey,
                 bootstrap_peers=[seed],
                 bootstrap_timeout=5.0,
             )

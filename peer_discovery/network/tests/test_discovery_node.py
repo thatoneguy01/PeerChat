@@ -7,7 +7,6 @@ def test_discovery_node_lifecycle(tmp_path):
     config = DiscoveryConfig(
         advertise_address="127.0.0.1:0",
         listen_port=0,
-        enable_crypto=False,
     )
     
     node = DiscoveryNode(

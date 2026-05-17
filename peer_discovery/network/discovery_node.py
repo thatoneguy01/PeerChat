@@ -4,8 +4,6 @@ from typing import Any
 
 from peer_discovery.membership_integration.service import MembershipService
 from peer_discovery.network.config import DiscoveryConfig
-from peer_discovery.network.crypto_provider import NullCryptoProvider, RSACryptoProvider
-from peer_discovery.network.keys import generate_or_load_keypair
 from peer_discovery.network.protocol import NetworkMessage
 from peer_discovery.network.transport import WebSocketClient, WebSocketListener
 
@@ -20,27 +18,29 @@ class DiscoveryNode:
         self.room_id = room_id
 
         logger.info(
-            "init room=%s advertise=%s listen_port=%d crypto=%s storage_dir=%s "
-            "bootstrap_peers=%s bootstrap_timeout=%.1fs",
+            "init room=%s advertise=%s listen_port=%d pubkey_bytes=%d "
+            "storage_dir=%s bootstrap_peers=%s bootstrap_timeout=%.1fs",
             room_id, config.advertise_address, config.listen_port,
-            "RSA" if config.enable_crypto else "Null",
+            len(config.public_key_pem),
             storage_dir, config.bootstrap_peers, config.bootstrap_timeout,
         )
 
         # 1. Initialize membership service
         self.service = MembershipService(room_id, storage_dir)
 
-        # 2. Initialize crypto
-        if config.enable_crypto:
-            priv_key = generate_or_load_keypair(config.key_dir)
-            self.crypto = RSACryptoProvider(priv_key)
-            logger.info(
-                "crypto_ready provider=RSACryptoProvider pubkey_bytes=%d",
-                len(self.crypto.get_public_key_bytes()),
+        # 2. Public key sourced externally (from Security's keystore via the
+        #    config). Discovery no longer owns any private key material —
+        #    chat-message signing/verifying is the Security/Distribution
+        #    layers' responsibility, and our handshake is plaintext now
+        #    (the only thing it carries is the pubkey itself, which is
+        #    public by definition).
+        self.public_key_pem: bytes = config.public_key_pem
+        if not self.public_key_pem:
+            logger.warning(
+                "no_public_key_pem — caller did not provide one. Other peers "
+                "will see this node's MemberInfo.public_key as empty, which "
+                "will break chat verify() at the Distribution layer."
             )
-        else:
-            self.crypto = NullCryptoProvider()
-            logger.info("crypto_ready provider=NullCryptoProvider (testing only)")
 
         # 3. Initialize transport
         self.client = WebSocketClient(timeout=config.bootstrap_timeout)

@@ -7,8 +7,7 @@ from peer_discovery.network.discovery_node import DiscoveryNode
 def test_gossip_dispatcher_dedup(tmp_path):
     config = DiscoveryConfig(
         advertise_address="node_a",
-        listen_port=0,
-        enable_crypto=False
+        listen_port=0
     )
     node = DiscoveryNode("room-1", config, str(tmp_path))
     node.start()

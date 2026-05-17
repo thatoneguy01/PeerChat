@@ -10,10 +10,7 @@ def test_two_nodes_bootstrap(tmp_path):
     # 1. Start seed node
     seed_config = DiscoveryConfig(
         advertise_address="seed_node",
-        listen_port=0,
-        enable_crypto=True,
-        key_dir=tmp_path / "seed_keys"
-    )
+        listen_port=0)
     seed = DiscoveryNode("room-1", seed_config, str(tmp_path / "seed_storage"))
     
     # Optional validator on seed
@@ -34,10 +31,7 @@ def test_two_nodes_bootstrap(tmp_path):
         client_config = DiscoveryConfig(
             advertise_address="client_node",
             listen_port=0,
-            enable_crypto=True,
-            bootstrap_peers=[seed_peer],
-            key_dir=tmp_path / "client_keys"
-        )
+            bootstrap_peers=[seed_peer])
         client = DiscoveryNode("room-1", client_config, str(tmp_path / "client_storage"))
         
         client.start(display_name="Client Node")
@@ -67,10 +61,7 @@ def test_bootstrap_rejected(tmp_path):
     # 1. Start seed node
     seed_config = DiscoveryConfig(
         advertise_address="seed_node",
-        listen_port=0,
-        enable_crypto=True,
-        key_dir=tmp_path / "seed_keys2"
-    )
+        listen_port=0)
     seed = DiscoveryNode("room-1", seed_config, str(tmp_path / "seed_storage2"))
     
     def rejector(user_id: str, display_name: str, context: dict) -> ValidationResult:
@@ -86,10 +77,7 @@ def test_bootstrap_rejected(tmp_path):
         client_config = DiscoveryConfig(
             advertise_address="client_node",
             listen_port=0,
-            enable_crypto=True,
-            bootstrap_peers=[seed_peer],
-            key_dir=tmp_path / "client_keys2"
-        )
+            bootstrap_peers=[seed_peer])
         client = DiscoveryNode("room-1", client_config, str(tmp_path / "client_storage2"))
         
         # Start should fail to join but won't throw exception, just logs warning
