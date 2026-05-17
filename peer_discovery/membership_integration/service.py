@@ -48,6 +48,10 @@ class MembershipService:
         return self._coordinator.get_snapshot()
 
     def subscribe_membership_events(self, callback, from_version: int = 0) -> 'SubscriptionHandle':
+        logger.info(
+            "subscribe_membership_events from_version=%d callback=%s",
+            from_version, getattr(callback, "__qualname__", repr(callback)),
+        )
         return self._coordinator.subscribe(callback, from_version)
 
     def start_history_backfill(self, user_id: str) -> None:
