@@ -57,6 +57,10 @@ class MembershipCoordinator:
         self._user_trace_ids: dict[str, str] = {}  # user_id → active trace_id
 
     @property
+    def has_history_handler(self) -> bool:
+        return self._history_handler is not None
+
+    @property
     def tracer(self) -> JoinLifecycleTracer | None:
         """Access the lifecycle tracer (None when tracing is disabled)."""
         return self._tracer
@@ -81,8 +85,16 @@ class MembershipCoordinator:
         public_key: bytes | None = None,
         context: dict | None = None,
     ) -> JoinResult:
+        logger.info(
+            "handle_join user_id=%s display_name=%s has_pubkey=%s source=%s",
+            user_id, display_name, public_key is not None,
+            (context or {}).get("source_address", "local"),
+        )
         # Duplicate join check
         if self._duplicate_guard.is_duplicate(user_id, EventType.JOIN_REQUESTED.value):
+            logger.warning(
+                "handle_join_rejected user_id=%s reason=duplicate", user_id,
+            )
             return JoinResult(
                 accepted=False,
                 seq_no=0,
@@ -135,6 +147,12 @@ class MembershipCoordinator:
         self._notifier.dispatch(event, delta)
         self._presence.register_member(user_id)
         self._durability.maybe_checkpoint(self._log, self._snapshot)
+        logger.info(
+            "join_accepted user_id=%s display_name=%s seq_no=%d version=%d "
+            "active_members=%d",
+            user_id, display_name, event.seq_no, event.membership_version,
+            len(self._snapshot.get_active_members()),
+        )
 
         # History team event bridge: notify so they can begin backfill replay
         if self._history_handler:
@@ -338,21 +356,35 @@ class MembershipCoordinator:
         """Apply a single gossiped event from a remote peer."""
         local_event = self._log.append_remote(event)
         delta = self._snapshot.apply_event(local_event)
-        
+
+        logger.info(
+            "apply_remote_event type=%s user_id=%s remote_seq=%d local_seq=%d "
+            "delta=%s",
+            local_event.event_type.value, local_event.user_id,
+            event.seq_no, local_event.seq_no,
+            delta.type if delta else "none",
+        )
+
         # If it was a state transition, notify subscribers
         if delta:
             self._notifier.dispatch(local_event, delta)
-            
+
         # Ensure presence knows about the member
         if local_event.event_type in (EventType.JOIN_ACCEPTED, EventType.HEARTBEAT):
             self._presence.register_member(local_event.user_id)
             if local_event.event_type == EventType.HEARTBEAT:
                 self._presence.record_heartbeat(local_event.user_id)
-                
+
         # Persist
         self._durability.maybe_checkpoint(self._log, self._snapshot)
 
     def _apply_remote_snapshot(self, events: list[MembershipEvent]) -> None:
         """Apply a batch of events from a SNAPSHOT_RESPONSE."""
+        logger.info("apply_remote_snapshot count=%d", len(events))
         for event in events:
             self._apply_remote_event(event)
+        snap = self._snapshot.get_snapshot()
+        logger.info(
+            "apply_remote_snapshot_done members=%d active=%d version=%d",
+            len(snap.members), snap.active_count, snap.version,
+        )

@@ -1,9 +1,12 @@
 """Persistent key generation and loading."""
+import logging
 import os
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+
+logger = logging.getLogger(__name__)
 
 
 def get_default_key_dir() -> Path:
@@ -21,13 +24,14 @@ def generate_or_load_keypair(key_dir: Path | None = None) -> rsa.RSAPrivateKey:
     priv_path = key_dir / "id_rsa"
     
     if priv_path.exists():
+        logger.info("keypair_load source=%s", priv_path)
         with open(priv_path, "rb") as f:
             return serialization.load_pem_private_key(
                 f.read(),
                 password=None,
             )
-            
-    # Generate new key
+
+    logger.info("keypair_generate path=%s size=2048", priv_path)
     private_key = rsa.generate_private_key(
         public_exponent=65537,
         key_size=2048,

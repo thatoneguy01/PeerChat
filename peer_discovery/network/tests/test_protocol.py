@@ -17,8 +17,8 @@ def test_encode_decode_round_trip():
     )
     
     encoded = encode_message(msg)
-    assert isinstance(encoded, bytes)
-    
+    assert isinstance(encoded, str)
+
     decoded = decode_message(encoded)
     assert decoded.message_type == MessageType.JOIN_REQUEST
     assert decoded.sender_id == "alice"
