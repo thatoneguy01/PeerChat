@@ -7,7 +7,7 @@ from peer_discovery.network.config import DiscoveryConfig
 from peer_discovery.network.crypto_provider import NullCryptoProvider, RSACryptoProvider
 from peer_discovery.network.keys import generate_or_load_keypair
 from peer_discovery.network.protocol import NetworkMessage
-from peer_discovery.network.transport import TCPClient, TCPListener
+from peer_discovery.network.transport import WebSocketClient, WebSocketListener
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,8 @@ class DiscoveryNode:
             logger.info("crypto_ready provider=NullCryptoProvider (testing only)")
 
         # 3. Initialize transport
-        self.client = TCPClient(timeout=config.bootstrap_timeout)
-        self.listener = TCPListener(
+        self.client = WebSocketClient(timeout=config.bootstrap_timeout)
+        self.listener = WebSocketListener(
             host="0.0.0.0",
             port=config.listen_port,
             handler=self._handle_network_message

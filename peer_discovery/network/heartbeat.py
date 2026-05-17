@@ -60,12 +60,10 @@ class HeartbeatManager:
             sender_id=self.node.advertise_address,
             payload={}
         )
-        # Encode once
+        # Encode once. WebSocket TEXT frames are strings.
         from peer_discovery.network.protocol import encode_message
         encoded_msg = encode_message(msg)
-        
-        from peer_discovery.network.framing import send_framed
-        
+
         while self._running:
             try:
                 snap = self.node.service.get_membership_snapshot()
@@ -108,16 +106,14 @@ class HeartbeatManager:
 
             time.sleep(self.node.config.heartbeat_interval)
 
-    def _send_ping(self, host: str, port: int, encoded_msg: bytes) -> None:
-        """Best effort ping."""
-        import socket
-        from peer_discovery.network.framing import send_framed
+    def _send_ping(self, host: str, port: int, encoded_msg: str) -> None:
+        """Best effort ping over WebSocket."""
+        from websockets.sync.client import connect as ws_connect
 
+        uri = f"ws://{host}:{port}/"
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(1.0)
-                sock.connect((host, port))
-                send_framed(sock, encoded_msg)
+            with ws_connect(uri, open_timeout=1.0, close_timeout=0.5) as ws:
+                ws.send(encoded_msg)
                 logger.debug("heartbeat_sent to=%s:%d", host, port)
         except Exception as e:
             logger.debug("heartbeat_failed to=%s:%d err=%s", host, port, e)
