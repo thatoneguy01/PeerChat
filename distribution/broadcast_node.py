@@ -41,8 +41,11 @@ from .vector_clock import VectorClock, HoldBackQueue
 
 try:
     from security import sign as _sign, verify as _verify, register_public_key as _register_pub_key
+    from security.payload_encryption import encrypt_payload as _encrypt_payload
+    from security.payload_encryption import is_encrypted_content as _is_encrypted_content
 except ImportError:
     _sign = _verify = _register_pub_key = None
+    _encrypt_payload = _is_encrypted_content = None
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +69,8 @@ class BroadcastNode:
         self.address = f"{host}:{port}"
         self.peer_registry = peer_registry
         self.enforce_signatures = enforce_signatures
+        # PEM for this node; used to build per-recipient ciphertext on originate/direct send.
+        self.own_public_key_pem: bytes | None = None
 
         # Called once per unique message this node receives or originates.
         # Set this before calling start().  Signature: (Message) -> None
@@ -246,6 +251,8 @@ class BroadcastNode:
             return False
         self._vc.increment(self.address)
         message.vector_clock = self._vc.snapshot()
+        if not self._encrypt_outgoing(message):
+            return False
         if not self._sign_outgoing(message):
             return False
         if self.on_message:
@@ -257,6 +264,8 @@ class BroadcastNode:
     async def _send_to_peer(self, host: str, port: int, message: Message) -> None:
         """Send to one peer without fanout."""
         direct_message = replace(message, ttl=0)
+        if not self._encrypt_outgoing(direct_message):
+            return
         if not self._sign_outgoing(direct_message):
             return
         await self._send_with_retry(host, port, direct_message)
@@ -458,6 +467,40 @@ class BroadcastNode:
             return False
 
         return True
+
+    def _encrypt_outgoing(self, message: Message) -> bool:
+        """Encrypt payload before signing when originating from this node."""
+        if _encrypt_payload is None or _is_encrypted_content is None:
+            return True
+        if _is_encrypted_content(message.content):
+            return True
+
+        pubkeys = self._gather_recipient_pubkeys()
+        if not pubkeys:
+            return True
+
+        try:
+            _encrypt_payload(message, pubkeys, own_user_id=self.address)
+            return True
+        except Exception:
+            logger.warning(
+                "payload encryption failed for message %s; sending plaintext",
+                message.id[:8],
+                exc_info=True,
+            )
+            return True
+
+    def _gather_recipient_pubkeys(self) -> dict[str, bytes]:
+        pubkeys: dict[str, bytes] = {}
+        if self.own_public_key_pem:
+            pubkeys[self.address] = self.own_public_key_pem
+        if hasattr(self.peer_registry, "get_pub_key"):
+            for host, port in self.peer_registry.get_peers():
+                user_id = f"{host}:{port}"
+                pub = self.peer_registry.get_pub_key(host, port)
+                if pub:
+                    pubkeys[user_id] = pub.encode("utf-8") if isinstance(pub, str) else pub
+        return pubkeys
 
     def _sign_outgoing(self, message: Message) -> bool:
         if _sign is None:

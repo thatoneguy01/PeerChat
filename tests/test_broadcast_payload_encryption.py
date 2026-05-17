@@ -1,4 +1,4 @@
-"""Encrypt (UI) → sign + deliver (BroadcastNode) → decrypt (UI)."""
+"""Distribution encrypt → sign → deliver → UI decrypt."""
 
 import asyncio
 import json
@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from distribution import BroadcastNode, InMemoryRegistry, Message
-from security import clear_keys, configure_private_key, register_public_key, sign
+from security import clear_keys, configure_private_key, register_public_key
 from security.key_storage import InMemoryKeyStore
 from security.payload_encryption import is_encrypted_content
 from ui.services.service import Service
@@ -77,17 +77,17 @@ def test_encrypted_signed_message_decrypts_at_receiver():
     registry.add_peer("127.0.0.1", 5001, alice_pub.decode())
     registry.add_peer("127.0.0.1", 5002, bob_pub.decode())
 
-    sender = Service(refreshes={})
-    sender.node_address = NODE_A
-    sender.key_store = InMemoryKeyStore()
-    sender.key_store.set_private_key(alice_priv)
-    sender.peer_registry = registry
-    outbound: list[Message] = []
-    sender.message_out = outbound.append
-    sender.post_message("secure ping")
+    sender_node = BroadcastNode("127.0.0.1", 5001, registry, enforce_signatures=True)
+    sender_node.own_public_key_pem = alice_pub
+    originated: list[Message] = []
+    sender_node.on_message = originated.append
 
-    wire = sign(outbound[0])
+    run(sender_node._do_broadcast(Message(content="secure ping", sender=NODE_A)))
+
+    assert len(originated) == 1
+    wire = originated[0]
     assert is_encrypted_content(wire.content)
+    assert wire.signature
 
     receiver_node = BroadcastNode("127.0.0.1", 5002, registry, enforce_signatures=True)
     delivered: list[Message] = []

@@ -29,6 +29,7 @@ def main():
     peer_registry = InMemoryRegistry()
     # node = BroadcastNode(host=socket.gethostbyname(socket.gethostname()), port=5020, peer_registry=peer_registry)
     node = BroadcastNode(host="0.0.0.0", port=5678, peer_registry=peer_registry)
+    node.own_public_key_pem = public_key_pem
     app.chat_service.peer_registry = peer_registry
 
     history = HistoryService(

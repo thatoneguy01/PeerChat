@@ -14,11 +14,7 @@ from peer_discovery.network.discovery_node import DiscoveryNode
 from peer_discovery.network.net_utils import get_lan_ip, pick_free_port
 from peer_discovery.membership.models import EventType
 from security.key_storage import InMemoryKeyStore, MissingKeyError
-from security.payload_encryption import (
-    PayloadEncryptionError,
-    decrypt_payload,
-    encrypt_payload,
-)
+from security.payload_encryption import PayloadEncryptionError, decrypt_payload
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +71,6 @@ class Service:
 
     def post_message(self, content: str) -> None:
         msg = Message(content=content, sender=self.node_address or "local")
-        try:
-            msg = encrypt_payload(
-                msg,
-                self._recipient_pubkeys(),
-                own_user_id=self.node_address,
-            )
-        except Exception:
-            logger.warning("payload encryption failed; sending plaintext", exc_info=True)
         self.message_out(msg)
 
     def use_history(self, history_service) -> None:
@@ -93,21 +81,6 @@ class Service:
             return
         self._messages.append({"sender": msg.sender, "timestamp": msg.timestamp, "content": msg.content})
         self._refresh("messages", self._messages)
-
-    def _recipient_pubkeys(self) -> dict[str, bytes]:
-        pubkeys: dict[str, bytes] = {}
-        if self.node_address and self.key_store is not None:
-            try:
-                pubkeys[self.node_address] = self.key_store.get_public_key_pem()
-            except MissingKeyError:
-                pass
-        if self.peer_registry is not None and hasattr(self.peer_registry, "get_pub_key"):
-            for host, port in self.peer_registry.get_peers():
-                user_id = f"{host}:{port}"
-                pub = self.peer_registry.get_pub_key(host, port)
-                if pub:
-                    pubkeys[user_id] = pub.encode("utf-8") if isinstance(pub, str) else pub
-        return pubkeys
 
     def _decrypt_for_display(self, msg: Message) -> str:
         if self.key_store is None or not self.node_address:
