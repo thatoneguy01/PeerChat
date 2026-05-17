@@ -438,7 +438,7 @@ Reuses the distribution team's message format exactly. Adds two helpers:
 Main class. Instantiate once per node:
 
 ```python
-from storage import LocalMessageStore
+from message_history.storage import LocalMessageStore
 
 # By default, snapshots are created after 200 active-log messages.
 store = LocalMessageStore()
@@ -526,7 +526,7 @@ streams them with `BroadcastNode.send_to_peer()`. Distribution sends each chunk
 only to the requested host and port, with no room-wide fanout.
 
 ```python
-from storage import HistoryChunkStreamer
+from message_history.storage import HistoryChunkStreamer
 
 streamer = HistoryChunkStreamer(
     store=store,

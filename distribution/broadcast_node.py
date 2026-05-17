@@ -59,11 +59,13 @@ class BroadcastNode:
         port: int,
         peer_registry: PeerRegistry,
         fanout: int = None,     # kept for API compatibility, ignored — sends to all peers
+        enforce_signatures: bool = False,
     ) -> None:
         self.host = host
         self.port = port
         self.address = f"{host}:{port}"
         self.peer_registry = peer_registry
+        self.enforce_signatures = enforce_signatures
 
         # Called once per unique message this node receives or originates.
         # Set this before calling start().  Signature: (Message) -> None
@@ -198,6 +200,12 @@ class BroadcastNode:
                     logger.info("Two-way link confirmed with %s", data.get("sender"))
                     continue
                 message = Message.from_json(raw)
+                if not self._verify_incoming(message):
+                    await websocket.send(json.dumps({
+                        "nack": message.id,
+                        "reason": "signature_failed_or_missing_key",
+                    }))
+                    continue
                 await websocket.send(json.dumps({"ack": message.id}))
                 asyncio.ensure_future(self._receive(message))
         except Exception as exc:
@@ -213,20 +221,6 @@ class BroadcastNode:
         """
         if not self.deduplicate(message.id):
             return False                        # already seen — stop the cascade
-
-        if message.signature and _verify is not None:
-            sender_parts = message.sender.rsplit(":", 1)
-            has_key = (
-                len(sender_parts) == 2
-                and hasattr(self.peer_registry, "get_pub_key")
-                and bool(self.peer_registry.get_pub_key(sender_parts[0], int(sender_parts[1])))
-            )
-            if has_key and not _verify(message):
-                logger.warning(
-                    "dropping message %s from %s — signature verification failed",
-                    message.id[:8], message.sender,
-                )
-                return False
 
         if self._vc.is_ready(message):
             self._vc.merge(message.vector_clock)
@@ -252,11 +246,8 @@ class BroadcastNode:
             return False
         self._vc.increment(self.address)
         message.vector_clock = self._vc.snapshot()
-        if _sign is not None:
-            try:
-                _sign(message)
-            except RuntimeError:
-                logger.debug("sign skipped: private key not configured")
+        if not self._sign_outgoing(message):
+            return False
         if self.on_message:
             self.on_message(message)
         if message.ttl > 0:
@@ -266,6 +257,8 @@ class BroadcastNode:
     async def _send_to_peer(self, host: str, port: int, message: Message) -> None:
         """Send to one peer without fanout."""
         direct_message = replace(message, ttl=0)
+        if not self._sign_outgoing(direct_message):
+            return
         await self._send_with_retry(host, port, direct_message)
 
     async def _forward(self, message: Message) -> None:
@@ -333,7 +326,11 @@ class BroadcastNode:
         pub_key = self.peer_registry.get_pub_key(host, port)
         if pub_key:
             try:
-                _register_pub_key(f"{host}:{port}", pub_key.encode())
+                if isinstance(pub_key, bytes):
+                    pub_key_bytes = pub_key
+                else:
+                    pub_key_bytes = str(pub_key).encode()
+                _register_pub_key(f"{host}:{port}", pub_key_bytes)
             except Exception as exc:
                 logger.warning("could not register pub key for %s:%d — %s", host, port, exc)
 
@@ -403,3 +400,88 @@ class BroadcastNode:
             for h, p in self.peer_registry.get_peers()
             if f"{h}:{p}" not in excluded
         ]
+
+    def _verify_incoming(self, message: Message) -> bool:
+        """Check message integrity before ACK, dedup, delivery, or forwarding."""
+        if _verify is None:
+            return not self.enforce_signatures
+
+        signature_required = self.enforce_signatures or self._has_any_peer_key()
+        if not signature_required:
+            return True
+
+        if not message.signature:
+            logger.warning(
+                "dropping message %s from %s — missing signature",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        sender_parts = message.sender.rsplit(":", 1)
+        if len(sender_parts) != 2:
+            logger.warning(
+                "dropping message %s — invalid sender address %s",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        host, port_str = sender_parts
+        try:
+            port = int(port_str)
+        except ValueError:
+            logger.warning(
+                "dropping message %s — invalid sender port %s",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        if not hasattr(self.peer_registry, "get_pub_key"):
+            logger.warning(
+                "dropping message %s from %s — no peer key registry",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        if not self.peer_registry.get_pub_key(host, port):
+            logger.warning(
+                "dropping message %s from %s — missing sender public key",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        self._register_peer_key(host, port)
+        if not _verify(message):
+            logger.warning(
+                "dropping message %s from %s — signature verification failed",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        return True
+
+    def _sign_outgoing(self, message: Message) -> bool:
+        if _sign is None:
+            return not self.enforce_signatures
+        try:
+            _sign(message)
+            return True
+        except RuntimeError:
+            if self.enforce_signatures:
+                logger.warning(
+                    "dropping outgoing message %s — private key not configured",
+                    message.id[:8],
+                )
+                return False
+            logger.debug("sign skipped: private key not configured")
+            return True
+
+    def _has_any_peer_key(self) -> bool:
+        if not hasattr(self.peer_registry, "get_pub_key"):
+            return False
+        try:
+            return any(
+                bool(self.peer_registry.get_pub_key(host, port))
+                for host, port in self.peer_registry.get_peers()
+            )
+        except Exception:
+            return False
