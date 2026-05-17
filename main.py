@@ -33,7 +33,7 @@ def main():
     node.start()
     time.sleep(3)
     
-    app.run(debug=True, host="127.0.0.1", port=5050)
+    app.run(use_reloader=False,debug=True, host="127.0.0.1", port=5050)
     # ui_thread = threading.Thread(target=run_ui, args=(app,), kwargs={"debug": True, "host": "127.0.0.1", "port": 5050})
     # ui_thread.daemon = True
     # ui_thread.start()

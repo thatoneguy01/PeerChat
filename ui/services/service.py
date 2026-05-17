@@ -58,7 +58,7 @@ class Service:
             message_history = [] # call here to get recent message history from your message distribution mechanism
         else:
             config = DiscoveryConfig(advertise_address=f"{get_external_ip()}:8002", listen_port=8002, bootstrap_peers=[f"{ip}:8001"])
-            node = DiscoveryNode(room_id="default", config=config, storage_gir="../storage")
+            node = DiscoveryNode(room_id="default", config=config, storage_dir="../storage")
             self.discover_node = node
             self.discover_service = self.discover_node.service
             self.discover_node.start(display_name=username)
