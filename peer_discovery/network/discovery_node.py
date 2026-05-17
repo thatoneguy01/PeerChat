@@ -31,7 +31,15 @@ class DiscoveryNode:
         self.service = MembershipService(room_id, storage_dir)
 
         # 2. Initialize crypto
-        if config.enable_crypto:
+        if config.public_key_override:
+            from peer_discovery.network.crypto_provider import PassthroughCryptoProvider
+            self.crypto = PassthroughCryptoProvider(config.public_key_override)
+            logger.info(
+                "crypto_ready provider=PassthroughCryptoProvider pubkey_bytes=%d "
+                "(using Security module key)",
+                len(config.public_key_override),
+            )
+        elif config.enable_crypto:
             priv_key = generate_or_load_keypair(config.key_dir)
             self.crypto = RSACryptoProvider(priv_key)
             logger.info(

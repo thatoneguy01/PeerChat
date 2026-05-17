@@ -9,6 +9,7 @@ from security import configure_private_key
 import threading
 import socket, time
 from utils import get_external_ip
+from peer_discovery.network.net_utils import get_lan_ip
 from message_history.storage import HistoryService
 
 
@@ -27,8 +28,9 @@ def main():
     app.chat_service.public_key_pem = public_key_pem
     
     peer_registry = InMemoryRegistry()
+    lan_ip = get_lan_ip()
     # node = BroadcastNode(host=socket.gethostbyname(socket.gethostname()), port=5020, peer_registry=peer_registry)
-    node = BroadcastNode(host="0.0.0.0", port=5678, peer_registry=peer_registry)
+    node = BroadcastNode(host=lan_ip, port=5678, peer_registry=peer_registry)
     app.chat_service.peer_registry = peer_registry
 
     history = HistoryService(

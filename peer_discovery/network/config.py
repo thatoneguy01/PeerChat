@@ -20,3 +20,8 @@ class DiscoveryConfig:
     # Lower this for interactive demos so a missing seed fails fast instead
     # of hanging the user-visible "connect" request.
     bootstrap_timeout: float = 30.0
+    # If set, the discovery node advertises this public key PEM in JOIN events
+    # instead of generating its own keypair.  Pass in the Security module's
+    # public key here so both the Distribution (signing) and Discovery
+    # (identity advertisement) layers share a single cryptographic identity.
+    public_key_override: bytes | None = None
