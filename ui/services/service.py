@@ -31,6 +31,10 @@ class Service:
         self.discover_node = None
         self.discover_service = None
         self.peer_registry = InMemoryRegistry()
+        # Port Distribution's BroadcastNode listens on. main.py overrides
+        # peer_registry; if it also changes the BroadcastNode port, it should
+        # set chat_service.chat_port to match. Default matches main.py:29.
+        self.chat_port = 5678
 
     def get_users(self) -> list[UserRecord]:
         return self._users
@@ -114,16 +118,20 @@ class Service:
         def handle_membership_event(event, delta):
             try:
                 if event.event_type == EventType.JOIN_ACCEPTED:
-                    host, port_str = event.user_id.rsplit(":", 1)
-                    self.peer_registry.add_peer(host, int(port_str), event.public_key or b"")
+                    host, _disc_port = event.user_id.rsplit(":", 1)
+                    # Distribution's BroadcastNode listens on self.chat_port,
+                    # NOT on the discovery TCP port encoded in event.user_id.
+                    # Sending chat to the discovery port produces the
+                    # "Incoming frame size 1195725856" (= ASCII "GET ") errors.
+                    self.peer_registry.add_peer(host, self.chat_port, event.public_key or b"")
                     if event.display_name and not any(
                         u.get("name") == event.display_name for u in self._users
                     ):
                         self._users.append({"name": event.display_name, "status": "Online"})
                     _refresh("users", self._users)
                 elif event.event_type == EventType.LEAVE_CONFIRMED:
-                    host, port_str = event.user_id.rsplit(":", 1)
-                    self.peer_registry.remove_peer(host, int(port_str))
+                    host, _disc_port = event.user_id.rsplit(":", 1)
+                    self.peer_registry.remove_peer(host, self.chat_port)
                     self._users[:] = [u for u in self._users if u.get("name") != event.display_name]
                     _refresh("users", self._users)
             except Exception as e:
