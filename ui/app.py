@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 from flask import Flask, render_template, request, send_from_directory
-from services import create_chat_service
+from ui.services import create_chat_service
 
 
 def create_app() -> Flask:
@@ -14,7 +14,9 @@ def create_app() -> Flask:
         os.getenv("MOCK_RESPONSES_ENABLED", "true"),
     )
     app.config["MOCK_DATA_ENABLED"] = mock_data_enabled.strip().lower() == "false"
-    chat_service = create_chat_service(app.config["MOCK_DATA_ENABLED"], refreshes={"users": lambda users: render_template("partials/users_list.html", users=users), "messages": lambda messages: render_template("partials/message_list.html", messages=messages)})
+    chat_service = create_chat_service(app.config["MOCK_DATA_ENABLED"], 
+                                       refreshes={"users": lambda users: render_template("partials/users_list.html", users=users),
+                                                   "messages": lambda messages: render_template("partials/message_list.html", messages=messages)})
     app.chat_service = chat_service
 
     @app.get("/")
@@ -52,7 +54,7 @@ def create_app() -> Flask:
     def connect() -> str:
         username = request.form.get("username", "").strip()
         ip = request.form.get("ip", "").strip()
-        chat_service.connect(username)
+        chat_service.connect(username, ip)
         return render_users_and_connect_state(connected=True, username=username, ip=ip)
 
     @app.post("/disconnect")
