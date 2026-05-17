@@ -1,5 +1,7 @@
 import pytest
 
+from distribution import Message
+from security import clear_keys, configure_private_key, register_public_key, sign, verify
 from security.key_bootstrap import (
     generate_rsa_private_key_pem,
     initialize_private_key_store,
@@ -71,3 +73,18 @@ def test_initialize_generates_runtime_only_key_if_no_persistent_store():
 
     assert runtime_store.has_private_key()
     assert b"BEGIN PUBLIC KEY" in public_key_pem
+
+
+def test_bootstrapped_private_key_can_sign_messages():
+    clear_keys()
+    runtime_store = InMemoryKeyStore()
+    public_key_pem = initialize_private_key_store(runtime_store, None)
+
+    configure_private_key(runtime_store.get_private_key())
+    register_public_key("127.0.0.1:5001", public_key_pem)
+
+    msg = sign(Message(content="hello", sender="127.0.0.1:5001"))
+
+    assert msg.signature
+    assert verify(msg)
+    clear_keys()

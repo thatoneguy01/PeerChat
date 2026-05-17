@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}PeerChat UI{% endblock %}
+{% block title %}Peer Chat{% endblock %}
 
 {% block content %}
 <!-- Top connection bar -->
@@ -24,28 +24,78 @@
       class="composer"
       hx-post="{{ url_for('post_message') }}"
       hx-target="#message-stream"
-      hx-swap="innerHTML"
+      hx-swap="innerHTML scroll:bottom"
     >
       <label class="sr-only" for="message">Message</label>
       <textarea id="message" name="message" rows="3" placeholder="Write a message..."></textarea>
       <div class="composer-actions">
-        <p class="hint">Enter a message to simulate the chat flow.</p>
+        <p class="hint">
+          Tip: press <kbd>/</kbd> to jump to the message box, then <kbd>Enter</kbd> to send.
+        </p>
         <button type="submit">Send</button>
       </div>
     </form>
   </section>
 </div>
 
+<button id="theme-toggle" class="theme-toggle-fab" type="button" aria-live="polite" aria-label="Switch theme" title="Switch theme">
+  <span id="theme-icon" aria-hidden="true">🌙</span>
+  <span id="theme-toggle-label" class="sr-only">Switch theme</span>
+</button>
+
 <script>
   (() => {
+    const themeStorageKey = "peerchat:theme";
+    const root = document.documentElement;
+    const themeToggle = document.getElementById("theme-toggle");
+    const themeIcon = document.getElementById("theme-icon");
+    const themeToggleLabel = document.getElementById("theme-toggle-label");
+
+    const getTheme = () => root.getAttribute("data-theme") || "light";
+
+    const setTheme = (theme) => {
+      root.setAttribute("data-theme", theme);
+      if (themeToggle) {
+        const nextTheme = theme === "dark" ? "light" : "dark";
+        const actionLabel = `Switch to ${nextTheme} mode`;
+        if (themeIcon) {
+          themeIcon.textContent = nextTheme === "dark" ? "🌙" : "☀";
+        }
+        if (themeToggleLabel) {
+          themeToggleLabel.textContent = actionLabel;
+        }
+        themeToggle.setAttribute("aria-label", actionLabel);
+        themeToggle.setAttribute("title", actionLabel);
+      }
+    };
+
+    if (themeToggle) {
+      setTheme(getTheme());
+      themeToggle.addEventListener("click", () => {
+        const currentTheme = getTheme();
+        const nextTheme = currentTheme === "dark" ? "light" : "dark";
+        setTheme(nextTheme);
+        try {
+          window.localStorage.setItem(themeStorageKey, nextTheme);
+        } catch (error) {
+          // Ignore localStorage access errors; theme still updates for this session.
+        }
+      });
+    }
+
     const composerForm = document.getElementById("composer-form");
     const messageInput = document.getElementById("message");
+    const messageStream = document.getElementById("message-stream");
     const draftStorageKey = `peerchat:draft`;
     const hasStorage = typeof window.localStorage !== "undefined";
 
-    if (!composerForm || !messageInput) {
+    if (!composerForm || !messageInput || !messageStream) {
       return;
     }
+
+    const scrollMessagesToBottom = () => {
+      messageStream.scrollTop = messageStream.scrollHeight;
+    };
 
     const saveDraft = () => {
       if (!hasStorage) return;
@@ -68,6 +118,7 @@
     };
 
     restoreDraft();
+    scrollMessagesToBottom();
 
     const isTypingTarget = (target) => {
       if (!(target instanceof HTMLElement)) {
@@ -125,6 +176,14 @@
       messageInput.value = "";
       clearDraft();
       messageInput.focus();
+    });
+
+    document.body.addEventListener("htmx:afterSettle", (event) => {
+      if (event.target !== messageStream) {
+        return;
+      }
+
+      scrollMessagesToBottom();
     });
   })();
 </script>
