@@ -26,14 +26,14 @@ def main():
     
     peer_registry = InMemoryRegistry()
     # node = BroadcastNode(host=socket.gethostbyname(socket.gethostname()), port=5020, peer_registry=peer_registry)
-    node = BroadcastNode(host="0.0.0.0", port=5000, peer_registry=peer_registry)
+    node = BroadcastNode(host="0.0.0.0", port=5678, peer_registry=peer_registry)
     node.on_message = lambda msg: app.chat_service.message_received(msg)
     app.chat_service.message_out = lambda content: node.broadcast(Message(content=content, sender=node.address))
     app.chat_service.peer_registry = peer_registry
     node.start()
     time.sleep(3)
     
-    app.run(use_reloader=False,debug=True, host="127.0.0.1", port=5050)
+    app.run(debug=True, host="127.0.0.1", port=5050, use_reloader=False)
     # ui_thread = threading.Thread(target=run_ui, args=(app,), kwargs={"debug": True, "host": "127.0.0.1", "port": 5050})
     # ui_thread.daemon = True
     # ui_thread.start()
