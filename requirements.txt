@@ -1,4 +1,4 @@
 websockets>=10.0
 keyring
 requests
-cryptography>=42.0
+cryptography
