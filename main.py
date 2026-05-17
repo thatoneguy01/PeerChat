@@ -2,6 +2,9 @@ from ui.app import create_app
 from distribution.broadcast_node import BroadcastNode
 from distribution.message import Message
 from distribution.peer_registry import InMemoryRegistry
+from security.key_storage import InMemoryKeyStore
+from security.persistent_key_storage import get_platform_key_storage
+from security.key_bootstrap import initialize_private_key_store
 import threading
 import socket, time
 from utils import get_external_ip
@@ -14,6 +17,12 @@ def run_ui(app, debug=True, host="127.0.0.1", port=5050):
 
 def main():
     app = create_app()
+
+    key_store = InMemoryKeyStore()
+    persistent_storage = get_platform_key_storage()
+    public_key_pem = initialize_private_key_store(key_store, persistent_storage)
+    app.chat_service.key_store = key_store
+    app.chat_service.public_key_pem = public_key_pem
     
     peer_registry = InMemoryRegistry()
     # node = BroadcastNode(host=socket.gethostbyname(socket.gethostname()), port=5020, peer_registry=peer_registry)
