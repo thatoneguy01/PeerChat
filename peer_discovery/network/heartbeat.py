@@ -61,12 +61,21 @@ class HeartbeatManager:
             try:
                 snap = self.node.service.get_membership_snapshot()
                 from peer_discovery.membership.models import MemberState
-                active_members = [
-                    uid for uid, m in snap.members.items() 
-                    if m.state == MemberState.ACTIVE
+                # Heartbeat any peer we still expect to be reachable: ACTIVE
+                # plus JOINING/BACKFILLING (mid-join), plus SUSPECTED (so a
+                # heartbeat from them flips us back to RECONNECTED).
+                trackable_states = {
+                    MemberState.ACTIVE,
+                    MemberState.JOINING,
+                    MemberState.BACKFILLING,
+                    MemberState.SUSPECTED,
+                }
+                trackable_members = [
+                    uid for uid, m in snap.members.items()
+                    if m.state in trackable_states
                 ]
-                
-                for member_id in active_members:
+
+                for member_id in trackable_members:
                     if member_id == self.node.advertise_address:
                         continue
                         

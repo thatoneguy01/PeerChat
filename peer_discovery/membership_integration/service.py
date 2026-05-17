@@ -68,6 +68,11 @@ class MembershipService:
         """
         self._coordinator.register_history_handler(handler)
 
+    @property
+    def has_history_handler(self) -> bool:
+        """True if a History team handler has been registered."""
+        return self._coordinator.has_history_handler
+
     def tick(self) -> None:
         """Periodic maintenance: presence liveness and backfill timeouts."""
         self._coordinator.tick()

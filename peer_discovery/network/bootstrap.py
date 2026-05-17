@@ -1,4 +1,6 @@
 """Bootstrap logic for joining the network."""
+import base64
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -39,16 +41,12 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
             sender_id=node.advertise_address,
             payload={
                 "display_name": display_name,
-                "public_key": node.crypto.get_public_key_bytes().decode("utf-8", errors="ignore") 
-                # Wait, we need to pass bytes or base64. Let's use base64 or just rely on the fact 
-                # that JSON doesn't do bytes. Wait, protocol.py uses dict. We should use hex or b64.
-            }
+                "public_key_b64": base64.b64encode(
+                    node.crypto.get_public_key_bytes()
+                ).decode(),
+            },
         )
-        
-        # We need actual base64 for pubkey
-        import base64
-        req.payload["public_key_b64"] = base64.b64encode(node.crypto.get_public_key_bytes()).decode()
-        
+
         logger.info("Attempting bootstrap via %s", peer)
         resp = node.client.send_and_receive(host, port, req)
         
@@ -73,9 +71,8 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
             continue
             
         try:
-            import json
             from peer_discovery.membership.models import MembershipEvent
-            
+
             ciphertext = base64.b64decode(encrypted_snapshot)
             plaintext = node.crypto.decrypt(ciphertext)
             events_data = json.loads(plaintext.decode("utf-8"))
@@ -96,9 +93,6 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
 
 def handle_join_request(node: 'DiscoveryNode', source_ip: str, msg: NetworkMessage) -> NetworkMessage:
     """Handle an incoming JOIN_REQUEST."""
-    import base64
-    import json
-    
     display_name = msg.payload.get("display_name", "Unknown")
     pk_b64 = msg.payload.get("public_key_b64")
     

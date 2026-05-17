@@ -57,6 +57,10 @@ class MembershipCoordinator:
         self._user_trace_ids: dict[str, str] = {}  # user_id → active trace_id
 
     @property
+    def has_history_handler(self) -> bool:
+        return self._history_handler is not None
+
+    @property
     def tracer(self) -> JoinLifecycleTracer | None:
         """Access the lifecycle tracer (None when tracing is disabled)."""
         return self._tracer

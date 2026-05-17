@@ -52,20 +52,38 @@ class DiscoveryNode:
     def start(self, display_name: str = "Node") -> None:
         """Start the node and connect to the network."""
         logger.info("Starting DiscoveryNode for room %s on port %d", self.room_id, self.config.listen_port)
+
+        # If the History team hasn't registered a backfill handler and the
+        # config opts in to auto-completion, install a default that drives
+        # JOINING → BACKFILLING → ACTIVE locally. Without this, joiners stay
+        # in JOINING forever (Distribution holds traffic) until the 30s
+        # backfill-timeout sweep kicks them out.
+        if self.config.auto_complete_backfill and not self.service.has_history_handler:
+            self.service.register_history_handler(self._auto_complete_backfill_handler)
+            logger.info("No history handler registered; installed auto-complete fallback")
+
         self.listener.start()
         self._running = True
-        
+
         # Phase 7: Bootstrap
         from peer_discovery.network.bootstrap import attempt_bootstrap
         success = attempt_bootstrap(self, display_name)
         if not success:
             logger.warning("Node started but failed to join the network.")
-        
+
         # Phase 8: Gossip
         self.service.subscribe_membership_events(self._gossip_dispatcher.dispatch)
-        
+
         # Phase 9: Heartbeat and tick
         self._heartbeat_manager.start()
+
+    def _auto_complete_backfill_handler(self, user_id: str, event: Any) -> None:
+        """Default no-op History bridge: immediately promote the joiner from
+        JOINING → BACKFILLING → ACTIVE so Distribution will route traffic.
+        Used when no History team handler is registered (standalone demos).
+        """
+        self.service.start_history_backfill(user_id)
+        self.service.complete_history_backfill(user_id)
 
     def stop(self) -> None:
         """Stop the node and cleanly leave the network."""
