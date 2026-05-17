@@ -40,7 +40,6 @@ def main():
     node.on_message = lambda msg: app.chat_service.message_received(msg)
     app.chat_service.message_out = lambda content: node.broadcast(Message(content=content, sender=node.address))
     node.start()
-    history.request_missing_history()
     time.sleep(3)
     
     app.run(debug=True, host="127.0.0.1", port=5050, use_reloader=False)

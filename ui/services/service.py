@@ -40,9 +40,7 @@ class Service:
         self.history_service = history_service
 
     def message_received(self, msg: Message) -> None:
-        if self.history_service is not None and self.history_service.handle_message(
-            msg
-        ).get("handled"):
+        if self.history_service.handle_message(msg).get("handled"):
             return
         self._messages.append({"sender": msg.sender_ip, "timestamp": msg.timestamp, "content": msg.content})
         self._refreshes.get("messages", lambda: None)(self._messages)  # trigger a refresh of the messages partial
@@ -75,16 +73,14 @@ class Service:
             mebership_snapshot = self.discover_node.service.get_membership_snapshot()
             for member in mebership_snapshot.members.values():
                 self.peer_registry.add_peer(member.user_id.split(":")[0], int(member.user_id.split(":")[1]), member.public_key)
+                self.history_service.request_missing_history(peer_addresses=[(member.user_id.split(":")[0], int(member.user_id.split(":")[1]))])
             connected_users = [user.display_name for user in mebership_snapshot.members.values()]
-        message_history = (
-            self.history_service.get_recent_messages(100)
-            if self.history_service is not None
-            else []
-        )
+        message_history = self.history_service.get_recent_messages(100)
 
         def handle_membership_event(event, delta):
             if event.event_type == EventType.JOIN_ACCEPTED:
                 self.peer_registry.add_peer(event.user_id.split(":")[0], int(event.user_id.split(":")[1]), event.public_key)
+                self.history_service.request_missing_history(peer_addresses=[(event.user_id.split(":")[0], int(event.user_id.split(":")[1]))])
                 self.user_connected(event.display_name)
             elif event.event_type == EventType.LEAVE_CONFIRMED:
                 self.peer_registry.remove_peer(event.user_id.split(":")[0], int(event.user_id.split(":")[1]), event.public_key)
