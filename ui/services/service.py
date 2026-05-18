@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import tempfile
 from typing import TYPE_CHECKING, Callable
-from time import time
+from time import sleep, time
 from flask import current_app, has_app_context
 from .contracts import MessageRecord, UserRecord
 from distribution import Message
@@ -181,6 +181,11 @@ class Service:
             self.discover_node.start(display_name=username)
         except Exception as e:
             logger.warning("DiscoveryNode.start() failed: %s", e)
+
+        if self.history_service is not None and ip:
+            sleep(1.0)
+            seed_host = ip.rsplit(":", 1)[0] if ":" in ip else ip
+            self.history_service.request_missing_history(peer_addresses=[(seed_host, self.chat_port)])
 
         if self.history_service is not None:
             message_history = self.history_service.get_recent_messages(100)
