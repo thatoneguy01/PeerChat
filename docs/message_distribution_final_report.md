@@ -174,16 +174,44 @@ I also learned that a local demo with all nodes on the same machine hides real p
 ### 6.2 Bhuvana
 
 **Main work:**  
-TODO
+I worked on the Peer Discovery integration boundary, the cross-team contracts that hold our module together with the rest of the project, and the end-to-end integration test that exercises all four layers as one system.
 
-**Tests / validation:**  
-TODO
+The first part was the `MembershipRouter`. `BroadcastNode` only knows how to call `get_peers()` on a `PeerRegistry`. For local tests this is `InMemoryRegistry`, but in the integrated app the peer set is owned by the Peer Discovery team's `MembershipService`. `MembershipRouter` is the adapter that sits between them: at startup it calls `get_membership_snapshot()` to populate an internal active/hold split, then subscribes to membership events with `from_version=snapshot.version` so no event between the snapshot and the subscription is missed. From then on, every JOIN_ACCEPTED, HISTORY_BACKFILL_COMPLETE, DISCONNECT_SUSPECTED, RECONNECTED, LEAVE_CONFIRMED, and DISCONNECT_TIMEOUT event mutates the routing table without `BroadcastNode` ever needing to know about it. `get_peers()` returns only the ACTIVE peers, so we never fan out to nodes that are still backfilling or already gone.
 
-**Problems found and fixes:**  
-TODO
+The second part was a fix to that initialization path. The first version of `MembershipRouter` only treated BACKFILLING and SUSPECTED peers as held — JOINING peers were silently dropped on the floor. That is wrong: a JOINING peer is mid-handshake, which means we should buffer for them and then promote on backfill complete, not pretend they do not exist. The fix was a one-line change to also hold JOINING members during init, but I added four regression tests that nail down the four states explicitly so this can never regress: JOINING and BACKFILLING are held, tombstoned/LEFT members are skipped, and the node's own address is always excluded from its own routing table.
+
+The third part was cleaning up legacy code. The original module had a `gossip_node.py` that did random-fanout TCP gossip — Asha's broadcast-to-all WebSocket design replaced it but the old file was still in the tree and four other files still mentioned `GossipNode` in comments and exports. I confirmed with Asha that the gossip path was no longer supported, deleted `gossip_node.py`, dropped the `GossipNode` export from `distribution/__init__.py`, and fixed the stale references in `message.py`, `peer_registry.py`, and `membership_router.py`. The point was to make sure new contributors did not see two competing designs in the same module and pick the wrong one.
+
+The fourth part was the integration contracts. We had four other teams calling into Distribution and we were getting a steady stream of "what does this method actually do" questions in chat. I wrote one contract document per team in `docs/`: `contract_security.md` for sign/verify and the TTL+VC exclusion rule, `contract_peer_discovery.md` for the `MembershipRouter` lifecycle and the events we react to, `contract_history.md` for the `on_message` listener and `send_to_peer` recovery path. Each contract has a "what we provide / what we need / open questions" structure so the other team can sign off on a specific page rather than re-derive the interface from our code. `docs/INTEGRATION.md` is a one-page overview that points each consumer team at the right contract.
+
+The most important agreement that came out of those contracts was the signing rule: Security signs `id`, `sender`, `timestamp`, and `content` only — `ttl` and `vector_clock` mutate in transit (`ttl` decrements every hop, `vector_clock` is stamped by `broadcast()` after the caller signs), so including them in the signed canonical form would invalidate the signature at every downstream peer. This is documented in `contract_security.md` and signed off there.
+
+The fifth part was the end-to-end integration test. Unit tests exist per layer, but nothing exercised the full path UI → Security → Distribution → wire → Distribution → History → UI as a single test. I built `tests/test_integration.py` with three stubs in `tests/stubs/`: `fake_security` (sign/verify), `fake_storage` (an append-only message log), and `listeners` (a small fan-out shim so Storage and the test observer can both subscribe to one `on_message` slot). The test wires three real `BroadcastNode` instances together over real WebSockets, one node originates a signed message, and the test asserts every other node delivers it exactly once with a valid signature, every storage instance has it in its log, and unsigned messages get dropped at the verification boundary. The stubs are intentionally small and self-contained so when Security and History land their real modules, the test swaps stubs for real implementations without changing the assertion shape.
+
+**Tests / validation:**
+
+- `test_membership_router.py` — `test_init_peer_in_joining_state_is_held_not_invisible`, `test_init_peer_in_backfilling_state_is_held`, `test_init_skips_tombstoned_members`, `test_init_excludes_self`. These pin the four init-time peer-state behaviors so the next refactor cannot quietly drop one.
+- `test_integration.py` — `test_signed_message_reaches_every_peer_once`, `test_unsigned_message_is_dropped_by_storage`, `test_duplicate_broadcast_still_delivers_once`, `test_multiple_listeners_all_see_every_message`, `test_direct_send_reaches_only_target_peer`. These run real WebSocket fan-out across three nodes and check the full pipeline behaves as the four contracts say it should.
+- Verified the legacy-cleanup change did not break anything by running the full 39-test suite before and after deleting `gossip_node.py`.
+
+**Problems found and fixes:**
+
+1. **JOINING peers were silently dropped during MembershipRouter init.**  
+   The original state filter only matched BACKFILLING and SUSPECTED. A peer mid-handshake during a snapshot would not appear in the active set and would not appear in the hold set, which meant the eventual HISTORY_BACKFILL_COMPLETE event had no entry to promote. The fix was to add JOINING to the held set, plus four regression tests that explicitly cover each init-time state.
+
+2. **Two competing broadcast designs were present in the same module.**  
+   `gossip_node.py` was a relic of an earlier random-fanout design that nobody used anymore but nothing had deleted. Confused at least one teammate during integration. The fix was to delete it, drop the export, and chase down the stale references in three other files.
+
+3. **Other teams were re-deriving our API from our code instead of from a contract.**  
+   We had repeated questions in chat about what `signature` should sign over, what listeners get called, and what happens to messages with `ttl == 0`. The fix was a contract per consumer team in `docs/`, with the signing rule (sign `{id, sender, timestamp, content}`, exclude `ttl` and `vector_clock`) called out explicitly because that one was getting wrong twice. After the contracts landed, the questions stopped.
+
+4. **No single test exercised the full pipeline as a system.**  
+   Each layer had unit tests, but nothing checked that a signed message originated by node A actually arrived signed-and-verified at the storage of node C through real WebSockets. The fix was `test_integration.py` with stub Security and Storage. When the real modules shipped, the stubs were a drop-in swap and the test still passed without changing its assertions.
 
 **What I learned:**  
-TODO
+Most of my work was at the seam between teams rather than inside any one algorithm, and that turned out to be where most of the integration bugs were hiding. The unit-test layer is comfortable because every assumption is fixed; the integration layer is uncomfortable because every assumption is somebody else's code. Writing the contracts forced me to make the assumptions explicit instead of leaving them encoded in test fixtures, and once they were on paper a few of them turned out to be wrong (the JOINING bug was found while writing `contract_peer_discovery.md` — the contract said "JOINING peers are held," the code did not, and the test then existed to keep them aligned).
+
+The other thing I learned is that adapters earn their keep. `MembershipRouter` is a small file but it is the only reason `BroadcastNode` does not need to know what a `MembershipSnapshot` is, and the only reason `MembershipService` does not need to know what a peer registry is. Putting the translation in one place meant Manasa's reconnect work and Anu's `send_to_peer` work could both happen without anyone touching the Peer Discovery side of the boundary.
 
 ---
 
