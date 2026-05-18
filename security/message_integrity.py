@@ -33,6 +33,17 @@ def clear_keys() -> None:
     _public_keys.clear()
 
 
+def get_private_key_pem() -> bytes | None:
+    """Return the configured private key as PEM bytes, or None if unset."""
+    if _private_key is None:
+        return None
+    return _private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
 def sign(msg: Message) -> Message:
     """Fill msg.signature over agreed stable fields and return msg."""
     if _private_key is None:

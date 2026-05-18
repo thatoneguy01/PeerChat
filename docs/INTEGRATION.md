@@ -38,10 +38,10 @@ node.stop()
 **Status:** Interface documented; implementation on your side. See [`contract_security.md`](contract_security.md).
 
 - You ship `sign(msg) → msg` and `verify(msg) → bool`.
-- Originator calls `sign()` **before** `node.broadcast(msg)`.
-- Receiver calls `verify()` **inside** its `on_message` handler (MD doesn't enforce verification — policy decision is yours).
+- MD calls `sign()` before sending outgoing broadcast and direct-send messages.
+- MD calls `verify()` before ACK, deduplication, delivery, or forwarding; failed/missing signatures are rejected before `on_message`.
 - Sign only the stable fields: `id`, `sender`, `timestamp`, `content` (canonicalized with `signature=""`).
-- **Exclude** `ttl` **and** `vector_clock` from the signed payload — both are mutated in-transit (TTL decrements per hop; VC is filled by `broadcast()` after you sign).
+- **Exclude** `ttl` **and** `vector_clock` from the signed payload — both are mutated in-transit (TTL decrements per hop; VC is filled by `broadcast()` after MD signs).
 - **Action needed:** confirm the `ttl` + `vector_clock` exclusion rule is acceptable.
 
 ### 3. History / Recovery → on_message listener + direct replay
@@ -62,7 +62,6 @@ node.start()
 
 # on user send:
 msg = Message(content=user_text, sender=node.address)
-msg = security.sign(msg)           # after Security ships
 node.broadcast(msg)
 ```
 
@@ -75,7 +74,7 @@ class Message:
     sender: str           # "host:port" of originator
     id: str               # auto UUID, don't set manually
     timestamp: float      # auto, time.time()
-    signature: str        # Security fills
+    signature: str        # Security fills via MD hook
     ttl: int              # default 10, decremented per hop, do NOT sign
     vector_clock: dict    # BroadcastNode fills in _do_broadcast
 ```
@@ -87,9 +86,9 @@ JSON round-trippable. Backward compatible with old messages missing `vector_cloc
 ### Send path
 ```
 UI: build Message
-UI: (optionally) Security.sign(msg)
 UI: node.broadcast(msg)
     MD: deduplicate(msg.id)  [atomic]
+    MD: Security.sign(msg)
     MD: vector_clock.increment(self.address)
     MD: msg.vector_clock = snapshot()
     MD: on_message(msg)  [local delivery]
@@ -101,7 +100,9 @@ UI: node.broadcast(msg)
 History: build replay chunk Message
 History: node.send_to_peer(target_host, target_port, msg)
     MD: copy msg with ttl=0
+    MD: Security.sign(msg)
     MD: send only to that peer with ACK+retry
+Target MD: Security.verify(msg)
 Target MD: deduplicate(msg.id)
 Target MD: on_message(msg)
 Target MD: ttl == 0, so do not forward
@@ -110,6 +111,7 @@ Target MD: ttl == 0, so do not forward
 ### Receive path
 ```
 MD: WS receive
+MD: Security.verify(msg)  [NACK/drop if invalid]
 MD: deduplicate(msg.id)  [drop if seen]
 MD: vector_clock.is_ready(msg)?
     yes → merge VC, on_message(msg), drain hold-back
@@ -117,7 +119,7 @@ MD: vector_clock.is_ready(msg)?
 MD: if ttl > 0, forward to other peers
 ```
 
-Your `on_message` sees each message once, in causal order, after dedup.
+Your `on_message` sees each message once, in causal order, after verification and dedup.
 
 ## Delivery guarantees
 

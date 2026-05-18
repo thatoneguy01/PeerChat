@@ -103,7 +103,7 @@ The public API (`start`, `stop`, `broadcast`, `on_message`) is unchanged. Other 
 | Team | Impact |
 |---|---|
 | **UI** | None. `on_message` still fires once per message, now in causal order. |
-| **Security** | None. `signature` is still set before `broadcast()`. The vector clock is part of the signed payload. Order of operations: fill `vector_clock`, fill `signature`, call `broadcast()`. |
+| **Security** | None. Distribution signs messages through Security, and `vector_clock` is excluded from the signed payload because Distribution mutates it for causal ordering. |
 | **Recovery & Storage** | Messages logged via `on_message` will now arrive in causal order, making log replay naturally ordered. No change needed on their side. |
 | **Discovery** | None. `PeerRegistry.get_peers()` interface is unchanged. |
 

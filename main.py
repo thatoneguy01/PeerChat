@@ -32,6 +32,7 @@ def main():
     lan_ip = get_lan_ip()
     # node = BroadcastNode(host=socket.gethostbyname(socket.gethostname()), port=5020, peer_registry=peer_registry)
     node = BroadcastNode(host=lan_ip, port=5678, peer_registry=peer_registry)
+    node.own_public_key_pem = public_key_pem
     app.chat_service.peer_registry = peer_registry
     # Expose the BroadcastNode to chat_service so DiscoveryNode can route
     # JOIN_REQUEST / JOIN_RESPONSE / gossip / heartbeat through the shared
@@ -46,8 +47,11 @@ def main():
     history.start()
     app.chat_service.use_history(history)
 
+    app.chat_service.prepare_message = node.decrypt_for_display
     node.on_message = lambda msg: app.chat_service.message_received(msg)
-    app.chat_service.message_out = lambda content: node.broadcast(Message(content=content, sender=node.address))
+    app.chat_service.message_out = lambda content: node.broadcast(
+        Message(content=content, sender=node.address)
+    )
     node.start()
 
     app.run(debug=True, host="127.0.0.1", port=5050, use_reloader=False)
