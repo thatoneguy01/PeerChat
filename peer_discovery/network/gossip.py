@@ -1,9 +1,21 @@
-"""Gossip protocol for event dissemination.
+"""Gossip protocol for membership-event dissemination.
 
-Outbound only after the consolidation. Inbound gossip arrives via
-Distribution's on_message → chat_service.message_received →
-DiscoveryNode.handle_message → DiscoveryNode._handle_gossip, which uses
-this dispatcher's ``_mark_seen`` for deduplication.
+The dispatcher is **outbound only** after the consolidation. When the
+local coordinator fires a membership delta (JOIN_ACCEPTED, LEAVE_CONFIRMED,
+HISTORY_BACKFILL_COMPLETE, DISCONNECT_SUSPECTED, ...), this class wraps it
+in a ``SUBTYPE_GOSSIP`` envelope and broadcasts it via Distribution's
+``BroadcastNode.broadcast`` so every reachable peer applies the same delta.
+
+Inbound gossip arrives the other way: Distribution's WS handler →
+``on_message`` → ``chat_service.message_received`` →
+``DiscoveryNode.handle_message`` → ``DiscoveryNode._handle_gossip``, which
+calls this dispatcher's :py:meth:`_mark_seen` to dedup before applying.
+
+**Dedup key:** ``f"{originator}:{seq_no}:{event_type}:{user_id}"``, kept in
+an LRU of 10,000 entries. Events with ``source == "remote"`` are not
+re-gossiped — that's the cycle-breaker. The same dedup key shape is used
+by the duplicate guard in :py:mod:`peer_discovery.membership.duplicate_guard`
+so a remote event can never be applied twice even across restarts.
 """
 import logging
 from collections import OrderedDict

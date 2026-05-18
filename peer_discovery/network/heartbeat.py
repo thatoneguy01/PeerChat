@@ -1,9 +1,22 @@
 """Heartbeat and presence liveness maintenance.
 
-Heartbeats ride Distribution's broadcast — one signed Message per interval,
-fanned out to all peers in the room. The receiver's
-DiscoveryNode._handle_heartbeat (called via on_message) records the
-heartbeat into the PresenceManager.
+Heartbeats ride Distribution's broadcast — one signed
+``SUBTYPE_HEARTBEAT`` Message per ``heartbeat_interval`` seconds (default
+5.0s), fanned out to every reachable peer. The receiver's
+``DiscoveryNode._handle_heartbeat`` (invoked via ``on_message``) records
+the timestamp into the ``PresenceManager``, which drives the SWIM-style
+two-phase ``ACTIVE → SUSPECTED → DISCONNECTED`` failure detector.
+
+Two background threads run while the manager is active:
+
+- ``heartbeat-out`` — emits one heartbeat envelope per interval.
+- ``presence-tick`` — calls ``MembershipService.tick()`` every
+  ``tick_interval`` seconds (default 1.0s). The tick is what actually
+  fires DISCONNECT_SUSPECTED / DISCONNECT_TIMEOUT / backfill-timeout
+  transitions; without it, presence state never advances even if peers
+  stop heartbeating.
+
+Both intervals are configurable via :class:`DiscoveryConfig`.
 """
 import logging
 import threading

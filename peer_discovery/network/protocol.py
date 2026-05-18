@@ -1,16 +1,23 @@
-"""Network protocol definitions and codecs.
+"""Wire-protocol codecs for peer discovery.
 
-This module serves two layers now:
+After the Distribution consolidation, peer_discovery has no socket of its
+own. Every discovery message — JOIN_REQUEST, JOIN_RESPONSE, GOSSIP,
+HEARTBEAT — rides inside Distribution's ``Message.content`` as a small
+JSON envelope. The four subtype constants below name those envelopes.
 
-1. The legacy ``NetworkMessage`` / ``encode_message`` / ``decode_message`` API
-   used by the old peer_discovery WebSocket transport on port 8001. Kept
-   around during the consolidation while the old transport is still wired
-   up; will be deleted in Phase 5.
+Two layers live in this module:
 
-2. The new discovery envelope helpers (``encode_discovery_envelope``,
-   ``decode_discovery_envelope``, ``is_discovery_message``) that wrap a
-   discovery payload inside Distribution's ``Message.content`` field. After
-   consolidation this is the only thing peer_discovery uses on the wire.
+1. **Discovery envelope (current)** — ``encode_discovery_envelope`` /
+   ``decode_discovery_envelope`` / ``is_discovery_message``. These are the
+   only codecs used on the wire today. The envelope always carries the
+   sender's public-key PEM so the receiver can lazy-register it for
+   signature verification (trust-on-first-use).
+
+2. **Legacy NetworkMessage (deprecated)** — ``NetworkMessage`` and the
+   ``encode_message`` / ``decode_message`` pair were the wire format for
+   the pre-consolidation peer_discovery TCP listener. The transport is
+   gone but the codecs are retained so the older membership unit tests
+   continue to pass without rewriting their fixtures.
 """
 import base64
 import json

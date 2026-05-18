@@ -1,5 +1,24 @@
-"""
-MembershipCoordinator (orchestrator)
+"""MembershipCoordinator — the single authoritative writer.
+
+The coordinator is the only component allowed to mutate the membership
+state of a room. It owns the :class:`MembershipEventLog` (durable append),
+the :class:`MembershipSnapshot` (in-memory projection), the
+:class:`DuplicateGuard` (idempotency for replayed gossip), the
+:class:`DurabilityManager` (checkpoint + recovery), and the
+:class:`EventNotifier` (subscriber fan-out).
+
+Single-writer discipline means every transition flows through one method:
+``handle_join``, ``handle_history_backfill_started`` /
+``..._complete``, ``handle_leave``, ``handle_heartbeat``,
+``handle_disconnect_suspected`` / ``..._timeout`` / ``handle_reconnect``.
+Each takes a ``source`` (``"local"`` for events originated here,
+``user_id`` of the originator for events arriving via gossip) and an
+optional pre-built event_id; the duplicate guard short-circuits any event
+we've already applied so gossip cycles are safe.
+
+This separation is what lets the :class:`MembershipService` facade expose
+a thread-safe O(1) API without leaking the snapshot/log/guard internals
+to callers.
 """
 
 import time
