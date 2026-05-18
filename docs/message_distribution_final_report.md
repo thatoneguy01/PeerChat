@@ -114,7 +114,7 @@ The latest full-repo test run after the newest commits passed:
 
 ---
 
-## 5. Failures and Fixes We Should Mention
+## 5. Failures and Fixes 
 
 
 | Failure / Issue | What It Taught Us | Fix / Current Status |
