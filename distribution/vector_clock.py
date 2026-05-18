@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-HOLDBACK_TIMEOUT = 30.0  # seconds before a stuck message is delivered out of causal order
+HOLDBACK_TIMEOUT = 5.0  # seconds before a stuck message is delivered out of causal order
 
 
 class VectorClock:

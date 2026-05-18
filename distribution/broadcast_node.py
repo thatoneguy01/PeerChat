@@ -50,6 +50,7 @@ ACK_TIMEOUT = 2.0           # seconds to wait for an ACK before retrying
 MAX_RETRIES = 3             # number of delivery attempts per peer
 RETRY_BACKOFF = 0.5         # seconds added per retry (0.5s, 1.0s, 1.5s)
 RETRY_FLUSH_INTERVAL = 10.0 # seconds between retry queue flush attempts
+HOLDBACK_DRAIN_INTERVAL = 2.0  # seconds between periodic hold-back drain attempts
 
 
 class BroadcastNode:
@@ -179,10 +180,12 @@ class BroadcastNode:
             logger.info("BroadcastNode listening on ws://%s:%d", self.host, self.port)
             retry_task = asyncio.ensure_future(self._retry_background_task())
             hello_task = asyncio.ensure_future(self._send_hello_to_all_peers())
+            drain_task = asyncio.ensure_future(self._holdback_drain_task())
             await self._stop_event.wait()
             retry_task.cancel()
             hello_task.cancel()
-            await asyncio.gather(retry_task, hello_task, return_exceptions=True)
+            drain_task.cancel()
+            await asyncio.gather(retry_task, hello_task, drain_task, return_exceptions=True)
 
     # ── Incoming message handling ─────────────────────────────────────────────
 
@@ -226,6 +229,11 @@ class BroadcastNode:
             self._vc.merge(message.vector_clock)
             to_deliver = [message] + self._hold_back.drain(self._vc)
         else:
+            logger.warning(
+                "[HOLDBACK] %s from %s not ready -buffering | msg_vc=%s | local_vc=%s",
+                message.id[:8], message.sender,
+                message.vector_clock, self._vc.snapshot(),
+            )
             self._hold_back.add(message)
             to_deliver = self._hold_back.drain(self._vc)
 
@@ -244,10 +252,11 @@ class BroadcastNode:
         """Originate a broadcast from this node."""
         if not self.deduplicate(message.id):
             return False
+        if not self._sign_outgoing(message):
+            logger.warning("sign failed for %s - VC NOT incremented, message dropped", message.id[:8])
+            return False
         self._vc.increment(self.address)
         message.vector_clock = self._vc.snapshot()
-        if not self._sign_outgoing(message):
-            return False
         if self.on_message:
             self.on_message(message)
         if message.ttl > 0:
@@ -355,6 +364,18 @@ class BroadcastNode:
                     )
         except Exception as exc:
             logger.warning("Handshake with %s:%d failed — %s", host, port, exc)
+
+    async def _holdback_drain_task(self) -> None:
+        """Every HOLDBACK_DRAIN_INTERVAL seconds, drain the hold-back queue.
+        """
+        while not self._stop_event.is_set():
+            await asyncio.sleep(HOLDBACK_DRAIN_INTERVAL)
+            if self._hold_back._queue:
+                released = self._hold_back.drain(self._vc)
+                for msg in released:
+                    logger.info("[DRAIN-TASK] delivering %s from %s", msg.id[:8], msg.sender)
+                    if self.on_message:
+                        self.on_message(msg)
 
     async def _retry_background_task(self) -> None:
         """Every RETRY_FLUSH_INTERVAL seconds, attempt to flush queued messages for offline peers."""
