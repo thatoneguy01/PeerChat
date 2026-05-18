@@ -132,7 +132,7 @@ node.stop()
 | `sender` | `str` | Originator | `"host:port"` |
 | `id` | `str` | Auto | UUID — used for dedup |
 | `timestamp` | `float` | Auto | `time.time()` |
-| `signature` | `str` | **Security team** | Fill before `broadcast()` |
+| `signature` | `str` | **Security via Distribution** | Filled by MD calling `security.sign(msg)` |
 | `ttl` | `int` | Default 10 | Decremented per hop — **do not sign** |
 | `vector_clock` | `dict` | **BroadcastNode** | Filled automatically on send — **do not sign** |
 
@@ -164,13 +164,12 @@ node.start()
 
 # on user send:
 msg = Message(content=user_text, sender=node.address)
-msg = security.sign(msg)
 node.broadcast(msg)
 ```
 
 ### Security team — `docs/contract_security.md`
 
-Ship `sign(msg) → msg` and `verify(msg) → bool`. Sign the stable fields (`id`, `sender`, `timestamp`, `content`, with `signature=""` for canonicalization). **Do not sign `ttl` or `vector_clock`** — both are mutated in transit (TTL per hop; vector_clock is filled by `broadcast()` after signing).
+Ship `sign(msg) → msg` and `verify(msg) → bool`. Distribution calls `sign(msg)` before sending and `verify(msg)` before accepting incoming messages. Sign the stable fields (`id`, `sender`, `timestamp`, `content`, with `signature=""` for canonicalization). **Do not sign `ttl` or `vector_clock`** — both are mutated in transit.
 
 ### Peer Discovery team — `docs/contract_peer_discovery.md`
 
