@@ -141,7 +141,8 @@ def test_direct_send_signs_recovery_message_when_security_is_enabled(keypair):
     sent = []
 
     async def fake_send(host, port, message):
-        sent.append((host, port, message))
+        wire = node._prepare_outgoing_for_peer(message, host, port)
+        sent.append((host, port, wire))
 
     node._send_with_retry = fake_send
 

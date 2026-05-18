@@ -43,6 +43,8 @@ class Service:
         # subscriber, BroadcastNode receive task, heartbeats) can push a
         # Flask app context before calling refresh callbacks that need it.
         self._flask_app = None
+        # Wired in main.py (e.g. BroadcastNode.decrypt_for_display) for encrypted history replay.
+        self.prepare_message: Callable[[Message], None] = lambda _msg: None
 
     def _refresh(self, key: str, payload) -> None:
         """Invoke a refresh callback safely from any thread.
@@ -146,7 +148,7 @@ class Service:
                     # Sending chat to the discovery port produces the
                     # "Incoming frame size 1195725856" (= ASCII "GET ") errors.
                     self.peer_registry.add_peer(host, self.chat_port, event.public_key or b"")
-                    
+
                     if self.history_service is not None:
                         # History recovery goes through Distribution's BroadcastNode
                         # (send_to_peer), which targets the CHAT port — not the
@@ -183,12 +185,17 @@ class Service:
         if self.history_service is not None:
             message_history = self.history_service.get_recent_messages(100)
             for message in message_history:
+                wire_msg = Message(
+                    content=getattr(message, "content", ""),
+                    sender=getattr(message, "sender", getattr(message, "sender_ip", "")),
+                )
+                self.prepare_message(wire_msg)
                 self._messages.append(
                     {
                         "role": "assistant",
                         "sender": getattr(message, "sender", getattr(message, "sender_ip", "")),
                         "timestamp": getattr(message, "timestamp", time()),
-                        "content": getattr(message, "content", ""),
+                        "content": wire_msg.content,
                     }
                 )
 
