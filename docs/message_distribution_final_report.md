@@ -384,7 +384,7 @@ The fix was to queue failed sends by peer address and flush that queue after the
 What I learned:
 I learned that reconnect logic is an important part of message distribution, not just an edge case. In a peer-to-peer system, peers can leave, restart, or temporarily fail at any time. The system should continue delivering to reachable peers while keeping failed sends recoverable. I also learned that “peer exists” and “peer is ready” are different states, and the handshake/retry queue helped make that distinction clear.
 
-## 7. References / Sources To Keep
+## 7. References
 
 These sources connect directly to the design choices in the module: causal ordering, WebSocket transport, asyncio concurrency, and signature/encryption behavior.
 
