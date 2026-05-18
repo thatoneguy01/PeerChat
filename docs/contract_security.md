@@ -27,8 +27,8 @@ def verify(msg: Message) -> bool:
     ...
 
 # Optional for E2E encryption:
-def encrypt_payload(msg: Message, recipient_pubkey: bytes) -> Message: ...
-def decrypt_payload(msg: Message, own_privkey: bytes) -> Message: ...
+def encrypt_payload(msg: Message, recipient_pubkeys: Mapping[str, bytes], *, own_user_id: str) -> Message: ...
+def decrypt_payload(msg: Message, own_user_id: str, private_key_pem: bytes) -> Message: ...
 ```
 
 ## Call order on send
@@ -81,7 +81,7 @@ Anything else is stable and signable.
 
 ## Key distribution
 
-Out of scope for MD. You decide how public keys / shared secrets get to peers. If your solution requires MD to piggyback keys on broadcast messages, that's a wire-format change we'd want to review.
+Out of scope for MD to discover keys. MD expects the peer registry to expose each sender's public key through `get_pub_key(host, port)` before verification.
 
 ## Open questions we need you to confirm by EOD 2026-05-12
 
