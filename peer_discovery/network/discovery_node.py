@@ -199,7 +199,6 @@ class DiscoveryNode:
         if self.broadcast_node is None:
             return
         content = getattr(msg, "content", "")
-        logger.info("lazy_register_pubkey: processing message %s, content: %r", msg.id[:8], content[:200])
 
         # If content is encrypted, decrypt a copy before parsing.
         # Import lazily to avoid circular imports at module load time.
@@ -220,26 +219,21 @@ class DiscoveryNode:
             pass  # encryption module not available; use content as-is
 
         if not is_discovery_message(content):
-            logger.warning("lazy_register_pubkey: not discovery message. content prefix: %r", content[:50])
             return
         try:
             _subtype, sender_pub_pem, _payload = decode_discovery_envelope(content)
-        except Exception as e:
-            logger.warning("lazy_register_pubkey: decode failed: %s", e)
+        except Exception:
             return
         if not sender_pub_pem:
-            logger.warning("lazy_register_pubkey: no sender_pub_pem in envelope")
             return
         sender = getattr(msg, "sender", "")
         try:
             host, port_str = sender.rsplit(":", 1)
             port = int(port_str)
-        except ValueError as e:
-            logger.warning("lazy_register_pubkey: bad sender format %s", sender)
+        except ValueError:
             return
         registry = self.broadcast_node.peer_registry
         if not hasattr(registry, "get_pub_key") or not hasattr(registry, "add_peer"):
-            logger.warning("lazy_register_pubkey: registry missing methods")
             return
         existing = registry.get_pub_key(host, port)
         if existing:
