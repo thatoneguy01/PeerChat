@@ -48,6 +48,29 @@ def get_lan_ip() -> str:
                     return ip
         except Exception:
             pass
+
+        # If DNS/hostname fails (e.g. Ubuntu hardcoded 127.0.1.1 in /etc/hosts),
+        # query the OS routing tools directly as a last-resort bulletproof fallback.
+        try:
+            import subprocess
+            import platform
+            system = platform.system()
+            if system == "Linux":
+                output = subprocess.check_output(["hostname", "-I"], text=True).strip()
+                for ip in output.split():
+                    if not ip.startswith("127."):
+                        return ip
+            elif system == "Darwin":
+                for iface in ["en0", "en1"]:
+                    try:
+                        output = subprocess.check_output(["ipconfig", "getifaddr", iface], text=True).strip()
+                        if output and not output.startswith("127."):
+                            return output
+                    except subprocess.CalledProcessError:
+                        continue
+        except Exception:
+            pass
+
         return "127.0.0.1"
     finally:
         sock.close()
