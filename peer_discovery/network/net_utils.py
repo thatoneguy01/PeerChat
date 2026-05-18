@@ -30,13 +30,24 @@ def get_lan_ip() -> str:
     selected. Works on any machine that has a default route, including when
     behind NAT.
 
-    Falls back to 127.0.0.1 if no route is available (e.g. fully offline).
+    Falls back to checking the hostname IP if no internet route is available 
+    (e.g. isolated LAN testing). Finally falls back to 127.0.0.1.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.connect(("8.8.8.8", 80))
         return sock.getsockname()[0]
     except OSError:
+        # Isolated LANs with no default gateway will fail the 8.8.8.8 connect.
+        # Fall back to resolving the local hostname to find a non-loopback IP.
+        try:
+            hostname = socket.gethostname()
+            _, _, ips = socket.gethostbyname_ex(hostname)
+            for ip in ips:
+                if not ip.startswith("127."):
+                    return ip
+        except Exception:
+            pass
         return "127.0.0.1"
     finally:
         sock.close()
