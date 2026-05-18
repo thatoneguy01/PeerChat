@@ -168,8 +168,8 @@ When a node comes back online, History needs to replay old messages to it. If th
 *Re-syncing causal state after recovery.*  
 After History finishes replaying old messages to a recovering node, Distribution's vector clock is still zeroed. Any live messages that arrived during recovery fail the causal readiness check (built by Shamathmika) and pile up in hold-back. `sync_vector_clock(vc)` accepts the latest clock from the recovered message set, merges it into the local state, and drains the hold-back queue. History calls this once recovery is complete. Without it, a recovered node would display old messages correctly but silently stop showing new ones.
 
-*Carrying Security payloads without modification.*  
-Messages have a `signature` field populated by the Security team before `broadcast()` is called. Distribution forwards the message object as-is over WebSockets. It never reads, modifies, or strips the signed content, so the receiving peer gets the exact bytes that Security signed. Verification happens at the Security layer on the receiving side; Distribution's only responsibility is not to corrupt what it carries.
+*Carrying Security payloads safely.*
+In the current integrated path, Distribution calls the Security team's signing and verification functions directly. On send, `BroadcastNode` signs the stable message fields and then prepares peer-specific encrypted copies for the wire. On receive, it verifies the signature before ACK, deduplication, delivery, or forwarding. Distribution still does not decide whether a signature is cryptographically valid itself; it owns the order and placement of those Security calls so invalid messages do not reach UI, History, or the rest of the network.
 
 **Tests / validation:**  
 

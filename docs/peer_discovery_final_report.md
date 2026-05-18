@@ -190,92 +190,144 @@ Many of these failures were discovered only after integrating with other teams. 
 ### 6.1 Mohammed Asim
 
 **Main work:**  
-I worked on the Presence & Failure Detection layer using a SWIM-inspired design. My main responsibility was implementing heartbeat-based liveness tracking and integrating PresenceManager with the networking and coordinator layers.
+I worked on the external integration and contract-testing side of the Peer Discovery subsystem. My primary responsibility was validating that the MembershipService API behaved correctly when used by the Message Distribution, History/Recovery, and Security teams.
 
-The system tracks:
-- heartbeat timestamps,
-- suspicion timing,
-- disconnect transitions,
-- reconnect handling.
+The main goal of my work was not building new membership algorithms, but ensuring that the rest of the distributed system could safely integrate with Peer Discovery without relying on internal implementation details.
 
-I implemented:
-- `register_member()`
-- `unregister_member()`
-- `record_heartbeat()`
-- `check_liveness()`
+I implemented and validated:
+- contract tests for external teams,
+- integration tests for membership workflows,
+- cross-team API compatibility checks,
+- replay synchronization validation,
+- membership lifecycle validation,
+- failure-detection integration tests.
 
-The main challenge was balancing:
-- fast disconnect detection,
-- low false-positive rates.
+The first major part of my work was creating contract tests for the dependent teams. Different teams were integrating with MembershipService simultaneously, and many assumptions about lifecycle states and API behavior were inconsistent between teams.
 
-A naive timeout-only system aggressively disconnected peers during temporary delays. To reduce this, I implemented a two-phase model:
+To solve this, I created contract-level validation for:
+- Message Distribution,
+- Message History,
+- Security integration.
+
+The contract tests verified:
+- snapshot correctness,
+- membership event ordering,
+- ACTIVE/BACKFILLING transitions,
+- routing visibility,
+- validator behavior,
+- replay synchronization,
+- callback semantics.
+
+I implemented test suites inside:
 
 ```text
-ALIVE
-  ↓ missed heartbeats
-SUSPECTED
-  ↓ timeout
-DISCONNECTED
+peer_discovery/membership/tests/contracts/
 ```
 
-Recovery flow:
+including:
+- `test_distribution_team_contract.py`
+- `test_history_team_contract.py`
+- `test_security_team_contract.py`
+
+These tests validated that external teams interacted with MembershipService correctly without depending on internal coordinator logic.
+
+The second major part of my work was the integration-test layer. Unit tests verified isolated behavior, but they did not validate the complete membership lifecycle across modules.
+
+I implemented integration scenarios inside:
 
 ```text
-SUSPECTED
-  ↓ heartbeat received
-ACTIVE
+peer_discovery/membership/tests/integration/
 ```
 
-The suspicion phase absorbs:
-- temporary network delays,
-- CPU pauses,
-- reconnect timing,
-- short packet loss
+including:
+- join lifecycle tests,
+- replay synchronization tests,
+- reconnect recovery tests,
+- cross-team membership workflows,
+- failure-detection integration scenarios.
 
-without forcing peers to fully rejoin the network.
+One important integration scenario validated that a node transitions through:
 
-I also integrated heartbeat routing into DiscoveryNode so HEARTBEAT messages flow through the actual transport layer instead of only existing locally.
+```text
+JOINING → BACKFILLING → ACTIVE
+```
 
-Another important part of the work was validating that PresenceManager never mutates membership state directly. Instead, it reports:
-- suspected,
-- timeout,
-- reconnected
+correctly before becoming routable to Message Distribution.
 
-through coordinator callbacks.
+Another important scenario validated that replay synchronization after reconnect does not produce duplicate membership state or inconsistent routing visibility.
 
-This separation simplified the architecture because the coordinator remains the only authoritative writer for membership state transitions.
+I also worked on failure-detection validation through PresenceManager integration tests. These tests ensured that:
+- suspected peers are not immediately removed,
+- reconnects restore ACTIVE state correctly,
+- timeout handling remains stable under delayed heartbeat timing.
 
-**Tests / validation:**
+Another important part of my work was validating that MembershipService remained the single public integration boundary for external teams. The tests ensured external modules interacted through:
+- snapshots,
+- subscriptions,
+- validator hooks,
+- lifecycle callbacks
 
-- Heartbeat timeout validation
-- Suspicion timing tests
-- Reconnect recovery tests
-- Membership replay synchronization tests
-- Multi-node heartbeat integration
-- Unknown peer heartbeat rejection tests
+instead of accessing internal coordinator state directly.
 
-**Problems found and fixes:**
-
-1. Immediate disconnect detection produced false positives. Temporary delays were incorrectly treated as permanent disconnects. The fix was adding the SUSPECTED state before DISCONNECTED.
-
-2. Heartbeat logic existed independently from networking. Earlier versions had local-only heartbeat handling. The fix was integrating HEARTBEAT routing through DiscoveryNode.
-
-3. Reconnect replay produced duplicate membership updates. Replayed events applied multiple times during reconnect recovery. The fix was version-aware replay synchronization.
-
-4. Unknown heartbeat senders caused unnecessary processing. HEARTBEAT messages from unknown peers were initially processed like normal members. The fix was early rejection for unknown user IDs.
-
-5. Reconnected peers sometimes re-entered ACTIVE too aggressively. The fix was validating heartbeat timing windows before state transitions.
-
-**What I learned:**  
-The biggest realization was that failure detection is mostly about balancing correctness and stability. Detecting a dead node is easy; deciding whether a node is truly dead or temporarily delayed is much harder.
-
-I also learned that distributed timing bugs are difficult to reproduce locally. Systems that appear stable on one machine can behave very differently once real concurrency and network timing are introduced.
-
-Another important realization was that architectural boundaries matter as much as algorithms. PresenceManager became much easier to reason about once it stopped mutating membership state directly and instead reported transitions through coordinator callbacks.
+This became important because earlier integration attempts tightly coupled external modules to coordinator internals, which created fragile dependencies during refactors.
 
 ---
 
+**Tests / validation:**
 
+Contract tests:
+- `test_distribution_team_contract.py`
+- `test_history_team_contract.py`
+- `test_security_team_contract.py`
+
+Integration tests:
+- replay synchronization validation
+- reconnect recovery tests
+- membership lifecycle tests
+- ACTIVE/BACKFILLING transition validation
+- callback subscription tests
+- multi-team integration scenarios
+
+Failure-detection validation:
+- heartbeat timeout tests
+- suspicion timing tests
+- reconnect handling tests
+- unknown heartbeat rejection tests
+
+Cross-team validation:
+- routing visibility checks for Distribution
+- replay consistency checks for History
+- validator-hook checks for Security
+
+---
+
+**Problems found and fixes:**
+
+1. **Different teams interpreted membership lifecycle states differently.**  
+   Distribution assumed JOIN_ACCEPTED peers were immediately routable, while History expected BACKFILLING first. The fix was explicit contract tests validating lifecycle transitions.
+
+2. **Replay synchronization produced inconsistent routing visibility.**  
+   Reconnecting peers sometimes appeared ACTIVE before replay synchronization completed. The fix was validating BACKFILLING → ACTIVE ordering in integration tests.
+
+3. **External teams relied on coordinator internals directly.**  
+   Earlier integrations bypassed MembershipService and depended on internal coordinator structures. The fix was contract tests enforcing MembershipService as the only public integration boundary.
+
+4. **Failure detection behaved differently under integration timing.**  
+   Unit tests passed locally, but reconnect timing during integration caused unstable ACTIVE/SUSPECTED transitions. The fix was replay-aware heartbeat timing validation.
+
+5. **Cross-team assumptions were undocumented.**  
+   Different teams interpreted subscriptions and callbacks differently. The fix was adding contract validation around snapshot APIs, subscriptions, and replay semantics.
+
+---
+
+**What I learned:**  
+The biggest realization was that integration boundaries matter as much as algorithms. Most of the difficult bugs were not caused by broken networking or replay logic, but by slightly different assumptions between teams about lifecycle semantics and API behavior.
+
+I also learned that distributed systems testing becomes much harder at the integration layer. A component that passes isolated unit tests can still fail once replay synchronization, routing visibility, reconnect timing, and external callbacks interact together.
+
+Another important lesson was that contract tests are extremely valuable in large multi-team systems. The tests became a shared specification for how MembershipService should behave, which reduced integration ambiguity significantly.
+
+I also learned that replay synchronization and lifecycle ordering are deeply connected. A node that appears ACTIVE too early can create inconsistent routing state across the rest of the distributed system.
 ## 7. References / Sources To Keep
 
 We should update this list as people add their final sections.
