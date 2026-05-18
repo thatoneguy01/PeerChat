@@ -1,5 +1,24 @@
-"""
-MembershipCoordinator (orchestrator)
+"""MembershipCoordinator — the single authoritative writer.
+
+The coordinator is the only component allowed to mutate the membership
+state of a room. It owns the :class:`MembershipEventLog` (durable append),
+the :class:`MembershipSnapshot` (in-memory projection), the
+:class:`DuplicateGuard` (idempotency for replayed gossip), the
+:class:`DurabilityManager` (checkpoint + recovery), and the
+:class:`EventNotifier` (subscriber fan-out).
+
+Single-writer discipline means every transition flows through one method:
+``handle_join``, ``handle_history_backfill_started`` /
+``..._complete``, ``handle_leave``, ``handle_heartbeat``,
+``handle_disconnect_suspected`` / ``..._timeout`` / ``handle_reconnect``.
+Each takes a ``source`` (``"local"`` for events originated here,
+``user_id`` of the originator for events arriving via gossip) and an
+optional pre-built event_id; the duplicate guard short-circuits any event
+we've already applied so gossip cycles are safe.
+
+This separation is what lets the :class:`MembershipService` facade expose
+a thread-safe O(1) API without leaking the snapshot/log/guard internals
+to callers.
 """
 
 import time
@@ -41,8 +60,10 @@ def _synthesize_delta_for_event(event):
 class MembershipCoordinator:
     BACKFILL_TIMEOUT_S = 30.0
 
-    def __init__(self, room_id: str, storage_dir: str | None = None, enable_tracing: bool = False):
+    def __init__(self, room_id: str, storage_dir: str | None = None, enable_tracing: bool = False,
+                 local_user_id: str | None = None):
         self._room_id = room_id
+        self._local_user_id = local_user_id
         self._log = MembershipEventLog(room_id)
         self._snapshot = MembershipSnapshot(room_id)
         self._notifier = EventNotifier()
@@ -145,7 +166,8 @@ class MembershipCoordinator:
         )
         delta = self._snapshot.apply_event(event)
         self._notifier.dispatch(event, delta)
-        self._presence.register_member(user_id)
+        if user_id != self._local_user_id:
+            self._presence.register_member(user_id)
         self._durability.maybe_checkpoint(self._log, self._snapshot)
         logger.info(
             "join_accepted user_id=%s display_name=%s seq_no=%d version=%d "
@@ -342,6 +364,8 @@ class MembershipCoordinator:
         # heartbeats and liveness checks work after restart.
         snap = self._snapshot.get_snapshot()
         for uid, m in snap.members.items():
+            if uid == self._local_user_id:
+                continue
             if m.state in (MemberState.ACTIVE, MemberState.JOINING,
                            MemberState.BACKFILLING, MemberState.SUSPECTED):
                 self._presence.register_member(uid)

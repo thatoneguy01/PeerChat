@@ -1,3 +1,23 @@
+"""Materialized membership view derived from the event log.
+
+The snapshot is a pure projection of :class:`MembershipEventLog`: given
+the same log, every node materializes the same snapshot. The snapshot
+holds, per ``user_id``, a :class:`MemberInfo` recording the member's
+current :class:`MemberState`, display name, public key (PEM bytes), and
+last-heartbeat timestamp.
+
+This module enforces the **state-machine guards** for every event type
+(see ``_ALLOWED_FROM_STATES`` below). An event whose "from" state isn't
+permitted produces an :class:`InvalidTransitionError` instead of silently
+corrupting state — this is the safety net that catches misordered gossip
+or stale catch-up replay.
+
+Snapshots are O(1) to read (``get_member`` / ``get_active_members``) and
+O(events) to materialize from cold via :meth:`apply`. The single
+``version`` counter advances per applied event, and subscribers use
+``version`` to subscribe-with-from-version semantics (see
+:class:`peer_discovery.membership_integration.notifier.EventNotifier`).
+"""
 import copy
 import logging
 import threading
