@@ -41,8 +41,10 @@ def _synthesize_delta_for_event(event):
 class MembershipCoordinator:
     BACKFILL_TIMEOUT_S = 30.0
 
-    def __init__(self, room_id: str, storage_dir: str | None = None, enable_tracing: bool = False):
+    def __init__(self, room_id: str, storage_dir: str | None = None, enable_tracing: bool = False,
+                 local_user_id: str | None = None):
         self._room_id = room_id
+        self._local_user_id = local_user_id
         self._log = MembershipEventLog(room_id)
         self._snapshot = MembershipSnapshot(room_id)
         self._notifier = EventNotifier()
@@ -145,7 +147,8 @@ class MembershipCoordinator:
         )
         delta = self._snapshot.apply_event(event)
         self._notifier.dispatch(event, delta)
-        self._presence.register_member(user_id)
+        if user_id != self._local_user_id:
+            self._presence.register_member(user_id)
         self._durability.maybe_checkpoint(self._log, self._snapshot)
         logger.info(
             "join_accepted user_id=%s display_name=%s seq_no=%d version=%d "
@@ -342,6 +345,8 @@ class MembershipCoordinator:
         # heartbeats and liveness checks work after restart.
         snap = self._snapshot.get_snapshot()
         for uid, m in snap.members.items():
+            if uid == self._local_user_id:
+                continue
             if m.state in (MemberState.ACTIVE, MemberState.JOINING,
                            MemberState.BACKFILLING, MemberState.SUSPECTED):
                 self._presence.register_member(uid)

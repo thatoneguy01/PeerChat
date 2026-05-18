@@ -1,4 +1,5 @@
 """Network utility helpers for the discovery layer."""
+import os
 import socket
 
 
@@ -25,6 +26,10 @@ def pick_free_port(start: int = 8001, end: int = 8020) -> int:
 def get_lan_ip() -> str:
     """Return this machine's primary LAN IP.
 
+    Override: set the ``PEERCHAT_LAN_IP`` environment variable to force a
+    specific IP (useful when the machine has VPN/Docker/Hyper-V adapters
+    that confuse auto-detection).
+
     Uses the standard UDP-socket trick: opens a UDP socket to a public address
     (no packet is actually sent) and reads back the local endpoint the OS
     selected. Works on any machine that has a default route, including when
@@ -33,6 +38,10 @@ def get_lan_ip() -> str:
     Falls back to checking the hostname IP if no internet route is available 
     (e.g. isolated LAN testing). Finally falls back to 127.0.0.1.
     """
+    override = os.environ.get("PEERCHAT_LAN_IP")
+    if override:
+        return override.strip()
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.connect(("8.8.8.8", 80))
@@ -51,3 +60,4 @@ def get_lan_ip() -> str:
         return "127.0.0.1"
     finally:
         sock.close()
+

@@ -20,8 +20,10 @@ class MembershipService:
     7 methods + 1 registration hook. That's the entire surface.
     """
 
-    def __init__(self, room_id: str, storage_dir: str | None = None, enable_tracing: bool = False):
-        self._coordinator = MembershipCoordinator(room_id, storage_dir, enable_tracing)
+    def __init__(self, room_id: str, storage_dir: str | None = None, enable_tracing: bool = False,
+                 local_user_id: str | None = None):
+        self._coordinator = MembershipCoordinator(room_id, storage_dir, enable_tracing,
+                                                  local_user_id=local_user_id)
         self._coordinator.recover()
         self._tick_timer: threading.Timer | None = None
         self._tick_interval: float = 1.0

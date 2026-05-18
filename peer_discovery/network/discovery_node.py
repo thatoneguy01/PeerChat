@@ -75,7 +75,8 @@ class DiscoveryNode:
         )
 
         # 1. Initialize membership service
-        self.service = MembershipService(room_id, storage_dir)
+        self.service = MembershipService(room_id, storage_dir,
+                                         local_user_id=config.advertise_address)
 
         self._running = False
 
