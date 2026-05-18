@@ -179,7 +179,8 @@
     });
 
     document.body.addEventListener("htmx:afterSettle", (event) => {
-      if (event.target !== messageStream) {
+      const target = event.detail && event.detail.target ? event.detail.target : event.target;
+      if (target !== messageStream) {
         return;
       }
 
