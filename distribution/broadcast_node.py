@@ -72,6 +72,19 @@ class BroadcastNode:
         # Set this before calling start().  Signature: (Message) -> None
         self.on_message: Optional[Callable[[Message], None]] = None
 
+        # Optional pre-verify side-effect hook. Runs inside _verify_incoming
+        # BEFORE the get_pub_key check, so consumers (e.g. Peer Discovery)
+        # can plant a sender's public key into peer_registry on first sight
+        # ("trust-on-first-use" bootstrap). The hook receives the Message;
+        # it should side-effect peer_registry and return None. Exceptions
+        # are caught and logged. If the hook is None (default), behavior is
+        # identical to without it — useful for any caller that doesn't need
+        # lazy registration.
+        # NOTE: this hook was added by the Peer Discovery team for the
+        # consolidation refactor — see commit message. Should be upstreamed
+        # to Distribution's main branch.
+        self.pre_verify_hook: Optional[Callable[[Message], None]] = None
+
         self._seen: Set[str] = set()
         self._seen_lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -462,6 +475,19 @@ class BroadcastNode:
                 message.id[:8], message.sender,
             )
             return False
+
+        # Pre-verify hook: gives consumers a chance to register the sender's
+        # pubkey before the lookup below. Used by Peer Discovery for
+        # trust-on-first-use bootstrap. Hook errors are caught and logged so
+        # a bad hook can never break message verification.
+        if self.pre_verify_hook is not None:
+            try:
+                self.pre_verify_hook(message)
+            except Exception as exc:
+                logger.warning(
+                    "pre_verify_hook failed for %s: %s",
+                    message.id[:8], exc,
+                )
 
         if not self.peer_registry.get_pub_key(host, port):
             logger.warning(

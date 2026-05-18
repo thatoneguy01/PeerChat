@@ -32,6 +32,10 @@ def main():
     # node = BroadcastNode(host=socket.gethostbyname(socket.gethostname()), port=5020, peer_registry=peer_registry)
     node = BroadcastNode(host=lan_ip, port=5678, peer_registry=peer_registry)
     app.chat_service.peer_registry = peer_registry
+    # Expose the BroadcastNode to chat_service so DiscoveryNode can route
+    # JOIN_REQUEST / JOIN_RESPONSE / gossip / heartbeat through the shared
+    # Distribution transport (port 5678) instead of its own listener.
+    app.chat_service.broadcast_node = node
 
     history = HistoryService(
         node=node,
