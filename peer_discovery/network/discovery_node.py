@@ -189,6 +189,9 @@ class DiscoveryNode:
         the message's own envelope so verify() can succeed (trust-on-
         first-use).
 
+        If the message content is encrypted (new payload encryption layer),
+        we decrypt a copy first before trying to parse as a discovery envelope.
+
         Idempotent: skip if the registry already has a key for this sender.
         Silent failure: any error is swallowed because Distribution catches
         and logs hook exceptions itself.
@@ -196,6 +199,25 @@ class DiscoveryNode:
         if self.broadcast_node is None:
             return
         content = getattr(msg, "content", "")
+
+        # If content is encrypted, decrypt a copy before parsing.
+        # Import lazily to avoid circular imports at module load time.
+        try:
+            from security.payload_encryption import is_encrypted_content, decrypt_payload
+            from security.message_integrity import get_private_key_pem
+            from dataclasses import replace as dc_replace
+            if is_encrypted_content(content):
+                private_pem = get_private_key_pem()
+                if private_pem:
+                    tmp = dc_replace(msg)
+                    try:
+                        decrypt_payload(tmp, self.broadcast_node.address, private_pem)
+                        content = tmp.content
+                    except Exception:
+                        pass  # decryption failed — fall through, hook will be a no-op
+        except ImportError:
+            pass  # encryption module not available; use content as-is
+
         if not is_discovery_message(content):
             return
         try:
@@ -224,6 +246,7 @@ class DiscoveryNode:
             )
         except Exception as exc:
             logger.warning("lazy_register_pubkey_failed sender=%s err=%s", sender, exc)
+
 
     # --- subtype handlers ------------------------------------------------
 
