@@ -224,9 +224,11 @@ The vector clock tracks how many messages each node has sent. Every outgoing mes
 
 The hold-back queue buffers out-of-order messages and re-checks them after every delivery. A single delivery can cascade: delivering M1 updates the local clock, which may unblock M2, which unblocks M3, and so on. The drain loop repeats until a full pass produces nothing new.
 
-The hold-back queue also has a 30-second timeout. If a predecessor message is permanently lost, messages waiting for it would be stuck forever. After the timeout, a stuck message is delivered out of causal order with a warning rather than held indefinitely. The timeout also merges the stuck message's clock so its successors can cascade out in the same drain pass.
+The hold-back queue has a 5-second timeout. If a predecessor message is permanently lost, messages waiting for it would be stuck forever. After the timeout, a stuck message is delivered out of causal order with a warning rather than held indefinitely. The timeout also merges the stuck message's clock so its successors can cascade out in the same drain pass.
 
-I also added `sync_vector_clock` to `BroadcastNode`. When a node restarts, its vector clock is zeroed. Live messages referencing history the node missed fail the causal check and pile into hold-back. `sync_vector_clock(recovered_vc)` merges the recovered clock into the local state and drains the hold-back queue, unblocking any stuck messages. A related fix ensures the hold-back queue drains on every incoming message, not only on messages that pass the causal check, so the timeout actually fires in low-traffic conditions.
+To ensure the timeout fires regardless of traffic, drain is called by a background coroutine (`_holdback_drain_task`) that runs every 2 seconds inside the asyncio event loop. Without this, drain only runs when a new message arrives. In a quiet network, a buffered message could remain past its timeout indefinitely because nothing triggers a re-check.
+
+I also added `sync_vector_clock` to `BroadcastNode`. When a node restarts, its vector clock is zeroed. Live messages referencing history the node missed fail the causal check and pile into hold-back. `sync_vector_clock(recovered_vc)` merges the recovered clock into the local state and drains the hold-back queue, unblocking any stuck messages.
 
 **Tests / validation:**  
 Tests cover the full vector clock and hold-back behavior:
@@ -247,17 +249,19 @@ Tests cover the full vector clock and hold-back behavior:
 
 **Problems found and fixes:**  
 
-1. **Hold-back queue stalls permanently in low-traffic conditions.**  
-   The timeout check only runs inside `drain()`, and `drain()` was only called when a message passed the causal check. If no message ever passes (for example, because the clock is zeroed after a restart), the timeout never fires and the queue is stuck indefinitely. The fix was to call `drain()` on every incoming message regardless of whether it passed the causal check.
+1. **Hold-back timeout does not fire in low-traffic conditions.**  
+   The timeout check runs inside `drain()`, but `drain()` was only called when a new message arrived and passed the causal check. In a quiet network where traffic stops after a message is buffered, the timeout never fires and the queue stalls indefinitely. The fix was a background coroutine that calls `drain()` every 2 seconds so the timeout fires based on wall time rather than on incoming traffic.
 
 2. **Node restarts with a zeroed vector clock, blocking all live messages.**  
    After a restart, the local clock is `{}`. Any live message with a clock like `{node1: 5}` fails `5 != 0+1` and goes into hold-back. The fix is `sync_vector_clock`, which merges the recovered clock into the local state and drains the hold-back queue in one operation.
 
 3. **Timeout delivery creates a permanent ordering violation for late predecessors.**  
-   When a timed-out message is force-delivered, the local clock advances past the gap. If the missing predecessor arrives later, it fails the sequence check and goes back into hold-back where it will time out again. This is a known limitation: one permanently lost message cascades into an ordering violation for everything behind it.
+   When a timed-out message is force-delivered, the local clock advances past the gap. If the missing predecessor arrives later, it fails the sequence check and goes into hold-back again where it will time out again. One permanently lost message cascades into an ordering violation for everything behind it. This is a known limitation of timeout-based approaches to causal ordering.
 
 **What I learned:**  
-Causal ordering is not a property of sending order, it is a property of what each node has seen. Messages can arrive out of order for normal network reasons and the system has to buffer them without stalling indefinitely. Vector clocks provide the metadata and the hold-back queue provides the mechanism, but correctness and liveness are in tension. A strict causal check is correct but can block forever if a predecessor is lost. The timeout is a deliberate tradeoff: progress is more useful than strict ordering when a message is gone for good. Making that tradeoff explicit and understanding what it costs is more valuable than avoiding the problem.
+The most significant realization was that correctness and liveness require separate mechanisms. The causal readiness check is sufficient to guarantee ordering under normal conditions, but it provides no bound on how long a message can wait. The timeout addresses liveness, and the background drain task makes the timeout meaningful in practice rather than only in theory. These are distinct design concerns, and conflating them leads to implementations that appear correct in unit tests but fail under realistic traffic patterns.
+
+Working with other teams also illustrated that module-level correctness does not imply system-level correctness. Some failure modes only emerge when two independently correct components interact in a way that neither team's tests would exercise. This reinforced the importance of integration testing across module boundaries, not just within individual components.
 
 ---
 

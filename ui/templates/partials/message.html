@@ -1,4 +1,5 @@
-<article class="message {{ message.role }}">
+{% set role = message.role if message.role in ["user", "assistant"] else "assistant" %}
+<article class="message {{ role }}">
   {# Lookup username by IP from the users list #}
   {% set sender_ip = message.sender or message.sender_ip %}
   {% set sender_host = sender_ip.split(':')[0] %}

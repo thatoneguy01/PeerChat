@@ -262,11 +262,15 @@ h1 {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   font-weight: 600;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .message-body {
   white-space: pre-wrap;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .composer {
@@ -346,6 +350,8 @@ h1 {
   background: var(--row-bg);
   border: 1px solid var(--row-border);
   font-weight: 500;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .users-list .no-users {

@@ -88,7 +88,9 @@ def create_app() -> Flask:
         app.connected_state["connected"] = True
         app.connected_state["username"] = username
         app.connected_state["ip"] = ip
-        return render_all_partials(connected=True, username=username, ip=ip)
+        # The connect form targets #users-box. Returning message HTML here
+        # causes message fragments to be rendered inside the users list.
+        return render_users_and_connect_state(connected=True, username=username, ip=ip)
 
     @app.post("/disconnect")
     def disconnect() -> str:
@@ -97,7 +99,7 @@ def create_app() -> Flask:
         app.connected_state["username"] = ""
         app.connected_state["ip"] = ""
         chat_service.disconnect(username)
-        return render_all_partials(connected=False, username="", ip="")
+        return render_users_and_connect_state(connected=False, username="", ip="")
 
     @app.post("/messages")
     def post_message() -> str:
