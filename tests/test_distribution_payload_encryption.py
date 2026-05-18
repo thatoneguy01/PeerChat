@@ -1,4 +1,7 @@
-"""Payload encryption in BroadcastNode (encrypt before sign, decrypt for UI)."""
+"""Per-peer payload encryption in BroadcastNode (_send_with_retry path)."""
+
+import asyncio
+import json
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -37,35 +40,35 @@ def keypairs():
     return out
 
 
-def test_encrypt_outgoing_builds_per_recipient_boxes(keypairs):
-    _, alice_pub = keypairs[NODE_A]
+def _box_count(content: str) -> int:
+    return len(json.loads(content).get("boxes", {}))
+
+
+def test_encrypt_for_peer_builds_single_recipient_box(keypairs):
     _, bob_pub = keypairs[NODE_B]
 
     registry = InMemoryRegistry()
-    registry.add_peer("127.0.0.1", 5001, alice_pub.decode())
     registry.add_peer("127.0.0.1", 5002, bob_pub.decode())
 
     node = BroadcastNode("127.0.0.1", 5001, registry)
-    node.own_public_key_pem = alice_pub
     msg = Message(content="hello", sender=NODE_A)
 
-    assert node._encrypt_outgoing(msg) is True
+    assert node._encrypt_for_peer(msg, "127.0.0.1", 5002) is True
     assert is_encrypted_content(msg.content)
+    assert _box_count(msg.content) == 1
+    assert NODE_B in json.loads(msg.content)["boxes"]
 
 
-def test_encrypt_outgoing_skips_already_encrypted_content(keypairs):
-    _, alice_pub = keypairs[NODE_A]
+def test_encrypt_for_peer_skips_already_encrypted_content(keypairs):
     _, bob_pub = keypairs[NODE_B]
 
     registry = InMemoryRegistry()
-    registry.add_peer("127.0.0.1", 5001, alice_pub.decode())
     registry.add_peer("127.0.0.1", 5002, bob_pub.decode())
 
     node = BroadcastNode("127.0.0.1", 5001, registry)
-    node.own_public_key_pem = alice_pub
     msg = Message(content='{"v":"pcenc-h1","boxes":{}}', sender=NODE_A)
 
-    assert node._encrypt_outgoing(msg) is True
+    assert node._encrypt_for_peer(msg, "127.0.0.1", 5002) is True
     assert msg.content == '{"v":"pcenc-h1","boxes":{}}'
 
 
@@ -78,12 +81,33 @@ def test_decrypt_for_display_decrypts_in_place(keypairs):
     node = BroadcastNode("127.0.0.1", 5001, registry)
 
     wire = Message(content="secret", sender=NODE_B)
-    encrypt_payload(
-        wire,
-        {NODE_A: alice_pub, NODE_B: bob_pub},
-        own_user_id=NODE_B,
-    )
+    encrypt_payload(wire, {NODE_A: alice_pub}, own_user_id=NODE_B)
     assert is_encrypted_content(wire.content)
+    assert _box_count(wire.content) == 1
 
     node.decrypt_for_display(wire)
     assert wire.content == "secret"
+
+
+def test_receive_skips_forward_of_peer_specific_ciphertext(keypairs):
+    alice_priv, alice_pub = keypairs[NODE_A]
+    _, bob_pub = keypairs[NODE_B]
+
+    configure_private_key(alice_priv)
+    registry = InMemoryRegistry()
+    registry.add_peer("127.0.0.1", 5002, bob_pub.decode())
+
+    node = BroadcastNode("127.0.0.1", 5001, registry)
+    forwarded: list[Message] = []
+
+    async def capture_forward(msg: Message) -> None:
+        forwarded.append(msg)
+
+    node._forward = capture_forward
+
+    wire = Message(content="relay me", sender=NODE_B, ttl=3)
+    encrypt_payload(wire, {NODE_A: alice_pub}, own_user_id=NODE_B)
+
+    asyncio.run(node._receive(wire))
+
+    assert forwarded == []

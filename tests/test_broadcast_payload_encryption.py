@@ -103,10 +103,11 @@ def test_encrypted_signed_message_decrypts_before_ui_callback():
     wire = Message(content="secure ping", sender=NODE_A, ttl=0)
     sender_node = BroadcastNode("127.0.0.1", 5001, registry, enforce_signatures=True)
     sender_node.own_public_key_pem = alice_pub
-    assert sender_node._encrypt_outgoing(wire) is True
-    assert sender_node._sign_outgoing(wire) is True
-    assert is_encrypted_content(wire.content)
-    assert wire.signature
+    prepared = sender_node._prepare_outgoing_for_peer(wire, "127.0.0.1", 5002)
+    assert prepared is not None
+    assert is_encrypted_content(prepared.content)
+    assert prepared.signature
+    wire = prepared
 
     configure_private_key(bob_priv)
     receiver_node = BroadcastNode("127.0.0.1", 5002, registry, enforce_signatures=True)

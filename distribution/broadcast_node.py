@@ -25,8 +25,8 @@ Public API
 
 import asyncio
 import json
-import threading
 import logging
+import threading
 from dataclasses import replace
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -242,7 +242,10 @@ class BroadcastNode:
                 self.on_message(self._message_for_ui(msg))
 
         if message.ttl > 0:
-            await self._forward(replace(message, ttl=message.ttl - 1))
+            if _is_encrypted_content is not None and _is_encrypted_content(message.content):
+                pass  # peer-specific ciphertext; originator must fan out directly
+            else:
+                await self._forward(replace(message, ttl=message.ttl - 1))
 
         return True
 
@@ -254,12 +257,8 @@ class BroadcastNode:
             return False
         self._vc.increment(self.address)
         message.vector_clock = self._vc.snapshot()
-        if not self._encrypt_outgoing(message):
-            return False
-        if not self._sign_outgoing(message):
-            return False
         if self.on_message:
-            self.on_message(self._message_for_ui(message))
+            self.on_message(replace(message))
         if message.ttl > 0:
             await self._forward(message)
         return True
@@ -267,10 +266,6 @@ class BroadcastNode:
     async def _send_to_peer(self, host: str, port: int, message: Message) -> None:
         """Send to one peer without fanout."""
         direct_message = replace(message, ttl=0)
-        if not self._encrypt_outgoing(direct_message):
-            return
-        if not self._sign_outgoing(direct_message):
-            return
         await self._send_with_retry(host, port, direct_message)
 
     async def _forward(self, message: Message) -> None:
@@ -286,13 +281,23 @@ class BroadcastNode:
         On total failure, queues the message for later retry if queue_on_fail is True.
         Pass queue_on_fail=False when flushing the retry queue to avoid re-queuing.
         """
+        wire = self._prepare_outgoing_for_peer(message, host, port)
+        if wire is None:
+            logger.warning(
+                "send aborted msg=%s to=%s:%d reason=prepare_failed",
+                message.id[:8],
+                host,
+                port,
+            )
+            return False
+
         uri = f"ws://{host}:{port}"
         if websockets is None:
             raise RuntimeError("websockets is required; install with: pip install -r requirements.txt")
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 async with websockets.connect(uri, open_timeout=2, close_timeout=2) as ws:
-                    await ws.send(message.to_json())
+                    await ws.send(wire.to_json())
                     ack_raw = await asyncio.wait_for(ws.recv(), timeout=ACK_TIMEOUT)
                     ack = json.loads(ack_raw)
                     if ack.get("ack") == message.id:
@@ -476,7 +481,7 @@ class BroadcastNode:
         self._decrypt_into(message)
 
     def _message_for_ui(self, message: Message) -> Message:
-        """Return a UI copy with decrypted content; wire message stays encrypted for forward."""
+        """Return a UI copy with decrypted content when content is encrypted on the wire."""
         ui_msg = replace(message)
         self._decrypt_into(ui_msg)
         return ui_msg
@@ -492,42 +497,58 @@ class BroadcastNode:
         try:
             _decrypt_payload(message, self.address, private_pem)
         except PayloadEncryptionError:
-            logger.warning("could not decrypt message %s", message.id)
+            logger.warning(
+                "decrypt failed msg=%s for=%s",
+                message.id[:8],
+                self.address,
+            )
             message.content = "[encrypted]"
 
-    def _encrypt_outgoing(self, message: Message) -> bool:
-        """Encrypt payload before signing when originating from this node."""
+    def _prepare_outgoing_for_peer(
+        self, template: Message, host: str, port: int
+    ) -> Message | None:
+        """
+        Build a per-peer wire message: encrypt for host:port, then sign.
+
+        ``template`` stays plaintext so retries and fanout reuse the same payload.
+        """
+        wire = replace(template)
+        if not self._encrypt_for_peer(wire, host, port):
+            return None
+        if not self._sign_outgoing(wire):
+            return None
+        return wire
+
+    def _encrypt_for_peer(self, message: Message, host: str, port: int) -> bool:
+        """Encrypt message.content for a single recipient (one box in pcenc-h1)."""
         if _encrypt_payload is None or _is_encrypted_content is None:
             return True
         if _is_encrypted_content(message.content):
             return True
 
-        pubkeys = self._gather_recipient_pubkeys()
-        if not pubkeys:
+        user_id = f"{host}:{port}"
+        pub = self._get_peer_pubkey(host, port)
+        if not pub:
             return True
 
         try:
-            _encrypt_payload(message, pubkeys, own_user_id=self.address)
+            _encrypt_payload(message, {user_id: pub}, own_user_id=self.address)
             return True
         except Exception:
             logger.warning(
-                "payload encryption failed for message %s; sending plaintext",
+                "payload encryption failed for message %s to %s; sending plaintext",
                 message.id[:8],
+                user_id,
                 exc_info=True,
             )
             return True
 
-    def _gather_recipient_pubkeys(self) -> dict[str, bytes]:
-        pubkeys: dict[str, bytes] = {}
-        if self.own_public_key_pem:
-            pubkeys[self.address] = self.own_public_key_pem
+    def _get_peer_pubkey(self, host: str, port: int) -> bytes | None:
         if hasattr(self.peer_registry, "get_pub_key"):
-            for host, port in self.peer_registry.get_peers():
-                user_id = f"{host}:{port}"
-                pub = self.peer_registry.get_pub_key(host, port)
-                if pub:
-                    pubkeys[user_id] = pub.encode("utf-8") if isinstance(pub, str) else pub
-        return pubkeys
+            pub = self.peer_registry.get_pub_key(host, port)
+            if pub:
+                return pub.encode("utf-8") if isinstance(pub, str) else pub
+        return None
 
     def _sign_outgoing(self, message: Message) -> bool:
         if _sign is None:

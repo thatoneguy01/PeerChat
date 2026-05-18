@@ -148,7 +148,7 @@ class Service:
                     # Sending chat to the discovery port produces the
                     # "Incoming frame size 1195725856" (= ASCII "GET ") errors.
                     self.peer_registry.add_peer(host, self.chat_port, event.public_key or b"")
-                    
+
                     if self.history_service is not None:
                         # History recovery goes through Distribution's BroadcastNode
                         # (send_to_peer), which targets the CHAT port — not the
