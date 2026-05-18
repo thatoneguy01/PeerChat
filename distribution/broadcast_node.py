@@ -500,13 +500,17 @@ class BroadcastNode:
         # trust-on-first-use bootstrap. Hook errors are caught and logged so
         # a bad hook can never break message verification.
         if self.pre_verify_hook is not None:
+            logger.info("_verify_incoming: calling pre_verify_hook for %s", message.id[:8])
             try:
                 self.pre_verify_hook(message)
+                logger.info("_verify_incoming: pre_verify_hook completed for %s", message.id[:8])
             except Exception as exc:
                 logger.warning(
                     "pre_verify_hook failed for %s: %s",
                     message.id[:8], exc,
                 )
+        else:
+            logger.warning("_verify_incoming: pre_verify_hook IS NONE for %s", message.id[:8])
 
         if not self.peer_registry.get_pub_key(host, port):
             logger.warning(
