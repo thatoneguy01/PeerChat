@@ -9,9 +9,9 @@
 
 ## What Message Distribution needs from you
 
-Two functions the calling layer (UI, or any message originator) runs **before** handing a message to `BroadcastNode.broadcast()`, and one function receiving peers run **after** the message is delivered via `on_message`.
+Two functions Message Distribution calls on the real send/receive paths: `sign(msg)` before sending, and `verify(msg)` before ACK, deduplication, delivery, or forwarding.
 
-We have left a `signature: str` field on `Message` (see `message.py`). How you populate it is your choice; we just carry it across the wire.
+We have left a `signature: str` field on `Message` (see `message.py`). Security populates it; MD carries it across the wire and checks it on receive.
 
 ## The interface
 
@@ -33,17 +33,18 @@ def decrypt_payload(msg: Message, own_privkey: bytes) -> Message: ...
 
 ## Call order on send
 
-The originator (typically the UI) runs:
+The originator (typically the UI) builds the message and hands it to MD:
 
 ```python
 msg = Message(content=text, sender=node.address)
-msg = security.sign(msg)        # YOU run this — BEFORE broadcast
-node.broadcast(msg)              # MD takes over; fills vector_clock, decrements ttl per hop
+node.broadcast(msg)
 ```
+
+MD calls `security.sign(msg)` before sending. It then fills `vector_clock` and handles forwarding.
 
 **Important — fields that change after signing:**
 
-`BroadcastNode.broadcast()` fills `msg.vector_clock` **after** the caller signs. `msg.ttl` is decremented on every forward hop. If you include either in the signed payload, the signature will be invalid at every downstream peer.
+`BroadcastNode.broadcast()` fills `msg.vector_clock` **after** MD signs. `msg.ttl` is decremented on every forward hop. If you include either in the signed payload, the signature will be invalid at every downstream peer.
 
 **You must exclude `ttl` and `vector_clock` from the signed canonical form.**
 
@@ -58,17 +59,7 @@ Sign these stable fields only:
 
 ## Call order on receive
 
-Each peer's BroadcastNode fires one callback per unique message (`node.on_message`), already de-duplicated and in causal order. The UI/storage layer does:
-
-```python
-def on_message(msg: Message) -> None:
-    if not security.verify(msg):
-        return                          # drop silently or log — your call
-    ui.display(msg)
-    storage.append(msg)
-```
-
-MD does **not** call `verify()` itself. Rationale: verification is a policy decision (drop vs. warn vs. quarantine) that belongs outside the distribution layer. If you want MD to enforce verification pre-delivery, say so and we'll add it to `_receive()` before `on_message`.
+Each peer's BroadcastNode calls `security.verify(msg)` before ACK, deduplication, delivery, or forwarding. Messages with missing/invalid signatures or missing sender public keys are rejected before `node.on_message` fires.
 
 ## What you can assume about us
 
@@ -84,7 +75,7 @@ Two `Message` fields change during transit and therefore cannot appear in your s
 | Field | Who changes it | When |
 |---|---|---|
 | `ttl` | MD `_forward` | Every hop (decremented) |
-| `vector_clock` | MD `_do_broadcast` | After caller signs, before send |
+| `vector_clock` | MD `_do_broadcast` | After MD signs, before send |
 
 Anything else is stable and signable.
 
@@ -95,5 +86,5 @@ Out of scope for MD. You decide how public keys / shared secrets get to peers. I
 ## Open questions we need you to confirm by EOD 2026-05-12
 
 - **Q1:** Confirm `ttl` and `vector_clock` excluded from signed canonical form. Yes/no.
-- **Q2:** Do you want MD to drop unverified messages pre-delivery, or hand them through and let the UI layer decide?
+- **Q2:** Resolved: MD drops unverified messages pre-delivery.
 - **Q3:** Should we add a `node.stamp(msg)` helper that fills vector_clock up front, so you can sign-with-VC if you want a stronger binding? Default: no.
