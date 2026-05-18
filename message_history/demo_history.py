@@ -114,6 +114,7 @@ def main() -> None:
 
     node.on_message = on_message
     node.start()
+    history.request_missing_history()
     time.sleep(0.5)
 
     print(f"Node: {node.address}")
