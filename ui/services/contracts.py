@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-UserRecord = dict[str, str]
+UserRecord = dict[str, str, str]
 MessageRecord = dict[int, str]
 
 

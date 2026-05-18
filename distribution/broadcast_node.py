@@ -25,8 +25,8 @@ Public API
 
 import asyncio
 import json
-import threading
 import logging
+import threading
 from dataclasses import replace
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -39,12 +39,25 @@ from .message import Message
 from .peer_registry import PeerRegistry
 from .vector_clock import VectorClock, HoldBackQueue
 
+try:
+    from security import sign as _sign, verify as _verify, register_public_key as _register_pub_key
+    from security.message_integrity import get_private_key_pem as _get_private_key_pem
+    from security.payload_encryption import PayloadEncryptionError
+    from security.payload_encryption import decrypt_payload as _decrypt_payload
+    from security.payload_encryption import encrypt_payload as _encrypt_payload
+    from security.payload_encryption import is_encrypted_content as _is_encrypted_content
+except ImportError:
+    _sign = _verify = _register_pub_key = _get_private_key_pem = None
+    _encrypt_payload = _decrypt_payload = _is_encrypted_content = None
+    PayloadEncryptionError = Exception  # type: ignore[misc, assignment]
+
 logger = logging.getLogger(__name__)
 
 ACK_TIMEOUT = 2.0           # seconds to wait for an ACK before retrying
 MAX_RETRIES = 3             # number of delivery attempts per peer
 RETRY_BACKOFF = 0.5         # seconds added per retry (0.5s, 1.0s, 1.5s)
 RETRY_FLUSH_INTERVAL = 10.0 # seconds between retry queue flush attempts
+HOLDBACK_DRAIN_INTERVAL = 2.0  # seconds between periodic hold-back drain attempts
 
 
 class BroadcastNode:
@@ -54,11 +67,14 @@ class BroadcastNode:
         port: int,
         peer_registry: PeerRegistry,
         fanout: int = None,     # kept for API compatibility, ignored — sends to all peers
+        enforce_signatures: bool = False,
     ) -> None:
         self.host = host
         self.port = port
         self.address = f"{host}:{port}"
         self.peer_registry = peer_registry
+        self.enforce_signatures = enforce_signatures
+        self.own_public_key_pem: bytes | None = None
 
         # Called once per unique message this node receives or originates.
         # Set this before calling start().  Signature: (Message) -> None
@@ -136,7 +152,7 @@ class BroadcastNode:
         self._vc.merge(vc)
         for msg in self._hold_back.drain(self._vc):
             if self.on_message:
-                self.on_message(msg)
+                self.on_message(self._message_for_ui(msg))
 
     def deduplicate(self, msg_id: str) -> bool:
         """
@@ -168,15 +184,16 @@ class BroadcastNode:
         if websockets is None:
             raise RuntimeError("websockets is required; install with: pip install -r requirements.txt")
         self._stop_event = asyncio.Event()
-        print("About to websocket.serve")
         async with websockets.serve(self._handle_ws, self.host, self.port):
             logger.info("BroadcastNode listening on ws://%s:%d", self.host, self.port)
             retry_task = asyncio.ensure_future(self._retry_background_task())
             hello_task = asyncio.ensure_future(self._send_hello_to_all_peers())
+            drain_task = asyncio.ensure_future(self._holdback_drain_task())
             await self._stop_event.wait()
             retry_task.cancel()
             hello_task.cancel()
-            await asyncio.gather(retry_task, hello_task, return_exceptions=True)
+            drain_task.cancel()
+            await asyncio.gather(retry_task, hello_task, drain_task, return_exceptions=True)
 
     # ── Incoming message handling ─────────────────────────────────────────────
 
@@ -194,6 +211,12 @@ class BroadcastNode:
                     logger.info("Two-way link confirmed with %s", data.get("sender"))
                     continue
                 message = Message.from_json(raw)
+                if not self._verify_incoming(message):
+                    await websocket.send(json.dumps({
+                        "nack": message.id,
+                        "reason": "signature_failed_or_missing_key",
+                    }))
+                    continue
                 await websocket.send(json.dumps({"ack": message.id}))
                 asyncio.ensure_future(self._receive(message))
         except Exception as exc:
@@ -214,15 +237,23 @@ class BroadcastNode:
             self._vc.merge(message.vector_clock)
             to_deliver = [message] + self._hold_back.drain(self._vc)
         else:
+            logger.warning(
+                "[HOLDBACK] %s from %s not ready -buffering | msg_vc=%s | local_vc=%s",
+                message.id[:8], message.sender,
+                message.vector_clock, self._vc.snapshot(),
+            )
             self._hold_back.add(message)
             to_deliver = self._hold_back.drain(self._vc)
 
         for msg in to_deliver:
             if self.on_message:
-                self.on_message(msg)
+                self.on_message(self._message_for_ui(msg))
 
         if message.ttl > 0:
-            await self._forward(replace(message, ttl=message.ttl - 1))
+            if _is_encrypted_content is not None and _is_encrypted_content(message.content):
+                pass  # peer-specific ciphertext; originator must fan out directly
+            else:
+                await self._forward(replace(message, ttl=message.ttl - 1))
 
         return True
 
@@ -232,10 +263,13 @@ class BroadcastNode:
         """Originate a broadcast from this node."""
         if not self.deduplicate(message.id):
             return False
+        if not self._sign_outgoing(message):
+            logger.warning("sign failed for %s - VC NOT incremented, message dropped", message.id[:8])
+            return False
         self._vc.increment(self.address)
         message.vector_clock = self._vc.snapshot()
         if self.on_message:
-            self.on_message(message)
+            self.on_message(replace(message))
         if message.ttl > 0:
             await self._forward(message)
         return True
@@ -258,13 +292,23 @@ class BroadcastNode:
         On total failure, queues the message for later retry if queue_on_fail is True.
         Pass queue_on_fail=False when flushing the retry queue to avoid re-queuing.
         """
+        wire = self._prepare_outgoing_for_peer(message, host, port)
+        if wire is None:
+            logger.warning(
+                "send aborted msg=%s to=%s:%d reason=prepare_failed",
+                message.id[:8],
+                host,
+                port,
+            )
+            return False
+
         uri = f"ws://{host}:{port}"
         if websockets is None:
             raise RuntimeError("websockets is required; install with: pip install -r requirements.txt")
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 async with websockets.connect(uri, open_timeout=2, close_timeout=2) as ws:
-                    await ws.send(message.to_json())
+                    await ws.send(wire.to_json())
                     ack_raw = await asyncio.wait_for(ws.recv(), timeout=ACK_TIMEOUT)
                     ack = json.loads(ack_raw)
                     if ack.get("ack") == message.id:
@@ -298,7 +342,25 @@ class BroadcastNode:
         """Send hello to every known peer after startup to confirm two-way connectivity."""
         await asyncio.sleep(0.5)  # let the server finish binding first
         for host, port in self.peer_registry.get_peers():
+            self._register_peer_key(host, port)
             asyncio.ensure_future(self._do_handshake(host, port))
+
+    def _register_peer_key(self, host: str, port: int) -> None:
+        """Register a peer's public key with the security module if available."""
+        if _register_pub_key is None:
+            return
+        if not hasattr(self.peer_registry, "get_pub_key"):
+            return
+        pub_key = self.peer_registry.get_pub_key(host, port)
+        if pub_key:
+            try:
+                if isinstance(pub_key, bytes):
+                    pub_key_bytes = pub_key
+                else:
+                    pub_key_bytes = str(pub_key).encode()
+                _register_pub_key(f"{host}:{port}", pub_key_bytes)
+            except Exception as exc:
+                logger.warning("could not register pub key for %s:%d — %s", host, port, exc)
 
     async def _do_handshake(self, host: str, port: int) -> None:
         """
@@ -321,6 +383,18 @@ class BroadcastNode:
                     )
         except Exception as exc:
             logger.warning("Handshake with %s:%d failed — %s", host, port, exc)
+
+    async def _holdback_drain_task(self) -> None:
+        """Every HOLDBACK_DRAIN_INTERVAL seconds, drain the hold-back queue.
+        """
+        while not self._stop_event.is_set():
+            await asyncio.sleep(HOLDBACK_DRAIN_INTERVAL)
+            if self._hold_back._queue:
+                released = self._hold_back.drain(self._vc)
+                for msg in released:
+                    logger.info("[DRAIN-TASK] delivering %s from %s", msg.id[:8], msg.sender)
+                    if self.on_message:
+                        self.on_message(msg)
 
     async def _retry_background_task(self) -> None:
         """Every RETRY_FLUSH_INTERVAL seconds, attempt to flush queued messages for offline peers."""
@@ -366,3 +440,162 @@ class BroadcastNode:
             for h, p in self.peer_registry.get_peers()
             if f"{h}:{p}" not in excluded
         ]
+
+    def _verify_incoming(self, message: Message) -> bool:
+        """Check message integrity before ACK, dedup, delivery, or forwarding."""
+        if _verify is None:
+            return not self.enforce_signatures
+
+        signature_required = self.enforce_signatures or self._has_any_peer_key()
+        if not signature_required:
+            return True
+
+        if not message.signature:
+            logger.warning(
+                "dropping message %s from %s — missing signature",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        sender_parts = message.sender.rsplit(":", 1)
+        if len(sender_parts) != 2:
+            logger.warning(
+                "dropping message %s — invalid sender address %s",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        host, port_str = sender_parts
+        try:
+            port = int(port_str)
+        except ValueError:
+            logger.warning(
+                "dropping message %s — invalid sender port %s",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        if not hasattr(self.peer_registry, "get_pub_key"):
+            logger.warning(
+                "dropping message %s from %s — no peer key registry",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        if not self.peer_registry.get_pub_key(host, port):
+            logger.warning(
+                "dropping message %s from %s — missing sender public key",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        self._register_peer_key(host, port)
+        if not _verify(message):
+            logger.warning(
+                "dropping message %s from %s — signature verification failed",
+                message.id[:8], message.sender,
+            )
+            return False
+
+        return True
+
+    def decrypt_for_display(self, message: Message) -> None:
+        """Decrypt message.content in place (e.g. history replay that never re-broadcasts)."""
+        self._decrypt_into(message)
+
+    def _message_for_ui(self, message: Message) -> Message:
+        """Return a UI copy with decrypted content when content is encrypted on the wire."""
+        ui_msg = replace(message)
+        self._decrypt_into(ui_msg)
+        return ui_msg
+
+    def _decrypt_into(self, message: Message) -> None:
+        if _decrypt_payload is None or _is_encrypted_content is None or _get_private_key_pem is None:
+            return
+        if not _is_encrypted_content(message.content):
+            return
+        private_pem = _get_private_key_pem()
+        if not private_pem:
+            return
+        try:
+            _decrypt_payload(message, self.address, private_pem)
+        except PayloadEncryptionError:
+            logger.warning(
+                "decrypt failed msg=%s for=%s",
+                message.id[:8],
+                self.address,
+            )
+            message.content = "[encrypted]"
+
+    def _prepare_outgoing_for_peer(
+        self, template: Message, host: str, port: int
+    ) -> Message | None:
+        """
+        Build a per-peer wire message: encrypt for host:port, then sign.
+
+        ``template`` stays plaintext so retries and fanout reuse the same payload.
+        """
+        wire = replace(template)
+        if not self._encrypt_for_peer(wire, host, port):
+            return None
+        if not self._sign_outgoing(wire):
+            return None
+        return wire
+
+    def _encrypt_for_peer(self, message: Message, host: str, port: int) -> bool:
+        """Encrypt message.content for a single recipient (one box in pcenc-h1)."""
+        if _encrypt_payload is None or _is_encrypted_content is None:
+            return True
+        if _is_encrypted_content(message.content):
+            return True
+
+        user_id = f"{host}:{port}"
+        pub = self._get_peer_pubkey(host, port)
+        if not pub:
+            return True
+
+        try:
+            _encrypt_payload(message, {user_id: pub}, own_user_id=self.address)
+            return True
+        except Exception:
+            logger.warning(
+                "payload encryption failed for message %s to %s; sending plaintext",
+                message.id[:8],
+                user_id,
+                exc_info=True,
+            )
+            return True
+
+    def _get_peer_pubkey(self, host: str, port: int) -> bytes | None:
+        if hasattr(self.peer_registry, "get_pub_key"):
+            pub = self.peer_registry.get_pub_key(host, port)
+            if pub:
+                return pub.encode("utf-8") if isinstance(pub, str) else pub
+        return None
+
+    def _sign_outgoing(self, message: Message) -> bool:
+        if _sign is None:
+            return not self.enforce_signatures
+        try:
+            _sign(message)
+            return True
+        except RuntimeError:
+            if self.enforce_signatures:
+                logger.warning(
+                    "dropping outgoing message %s — private key not configured",
+                    message.id[:8],
+                )
+                return False
+            logger.debug("sign skipped: private key not configured")
+            return True
+
+    def _has_any_peer_key(self) -> bool:
+        if not hasattr(self.peer_registry, "get_pub_key"):
+            return False
+        try:
+            return any(
+                bool(self.peer_registry.get_pub_key(host, port))
+                for host, port in self.peer_registry.get_peers()
+            )
+        except Exception:
+            return False

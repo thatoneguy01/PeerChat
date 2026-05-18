@@ -35,83 +35,115 @@ class GossipDispatcher:
     def dispatch(self, event: MembershipEvent, delta: MembershipDelta | None) -> None:
         """Callback from MembershipService for outgoing events."""
         if event.source == "remote":
-            # We already gossiped this when it was received if it was new.
-            # But wait, the plan says:
-            # "Outgoing Gossip: For every MembershipEvent, if event.source != 'remote', broadcast"
+            logger.debug(
+                "gossip_skip_remote event_type=%s user_id=%s seq_no=%d",
+                event.event_type.value, event.user_id, event.seq_no,
+            )
             return
-            
+
+        logger.info(
+            "gossip_dispatch_local event_type=%s user_id=%s seq_no=%d source=%s",
+            event.event_type.value, event.user_id, event.seq_no, event.source,
+        )
         self._gossip(event, skip_peer=None)
 
     def handle_incoming_gossip(self, source_ip: str, msg: NetworkMessage) -> None:
         """Handle incoming EVENT_BROADCAST message."""
         payload = msg.payload.get("event")
         if not payload:
+            logger.warning(
+                "gossip_recv_no_payload from=%s sender=%s", source_ip, msg.sender_id,
+            )
             return
-            
+
         try:
             event = MembershipEvent.from_dict(payload)
         except Exception as e:
-            logger.warning("Failed to parse incoming gossip from %s: %s", msg.sender_id, e)
+            logger.warning(
+                "gossip_parse_failed from=%s sender=%s err=%s",
+                source_ip, msg.sender_id, e,
+            )
             return
-            
-        # event_id = f"{originator}:{seq_no}:{event_type}:{user_id}"
+
         originator = event.originator or event.user_id
         event_id = f"{originator}:{event.seq_no}:{event.event_type.value}:{event.user_id}"
-        
+
         if self._mark_seen(event_id):
-            return  # Already seen, drop
-            
-        # Apply remote event (will be deduped by internal state machine if already applied)
+            logger.debug(
+                "gossip_recv_duplicate from=%s event_id=%s — already seen, dropped",
+                msg.sender_id, event_id,
+            )
+            return
+
+        logger.info(
+            "gossip_recv_new from=%s event_type=%s user_id=%s seq_no=%d",
+            msg.sender_id, event.event_type.value, event.user_id, event.seq_no,
+        )
         self.node.service.apply_remote_event(event)
-        
+
         # Forward gossip to other peers
         self._gossip(event, skip_peer=msg.sender_id)
 
     def _gossip(self, event: MembershipEvent, skip_peer: str | None = None) -> None:
         """Broadcast an event to all known active/suspected peers."""
-        # Mark local events as seen so we don't bounce them back if received later
         originator = event.originator or event.user_id
         event_id = f"{originator}:{event.seq_no}:{event.event_type.value}:{event.user_id}"
         self._mark_seen(event_id)
-        
-        # Prepare message
+
         msg = NetworkMessage(
             message_type=MessageType.EVENT_BROADCAST,
             sender_id=self.node.advertise_address,
             payload={"event": event.to_dict()}
         )
-        
-        # Get peers
+
         snap = self.node.service.get_membership_snapshot()
-        
+        targets = []
+
         for member_id, info in snap.members.items():
             if member_id == self.node.advertise_address:
                 continue
             if skip_peer and member_id == skip_peer:
                 continue
-                
+
             try:
                 host, port_str = member_id.split(":")
                 port = int(port_str)
             except ValueError:
+                logger.warning("gossip_bad_member_id member_id=%s — skipped", member_id)
                 continue
-                
-            # Fire and forget
-            # Submit to ThreadPoolExecutor to avoid blocking the caller
+
+            targets.append((host, port, member_id))
             self.node.listener._executor.submit(
-                self._send_fire_and_forget, host, port, msg
+                self._send_fire_and_forget, host, port, msg, member_id,
             )
 
-    def _send_fire_and_forget(self, host: str, port: int, msg: NetworkMessage) -> None:
+        if targets:
+            logger.info(
+                "gossip_fanout event_type=%s user_id=%s seq_no=%d targets=%d",
+                event.event_type.value, event.user_id, event.seq_no, len(targets),
+            )
+        else:
+            logger.debug(
+                "gossip_no_targets event_type=%s user_id=%s seq_no=%d "
+                "(no other members yet)",
+                event.event_type.value, event.user_id, event.seq_no,
+            )
+
+    def _send_fire_and_forget(
+        self, host: str, port: int, msg: NetworkMessage, target_id: str | None = None,
+    ) -> None:
         """Send a message without waiting for a response."""
-        import socket
-        from peer_discovery.network.framing import send_framed
+        from websockets.sync.client import connect as ws_connect
         from peer_discovery.network.protocol import encode_message
-        
+
+        target = target_id or f"{host}:{port}"
+        uri = f"ws://{host}:{port}/"
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(5.0)  # Short timeout for fire and forget
-                sock.connect((host, port))
-                send_framed(sock, encode_message(msg))
+            with ws_connect(uri, open_timeout=5.0, close_timeout=1.0) as ws:
+                ws.send(encode_message(msg))
+                logger.debug("gossip_sent_ok to=%s type=%s", target, msg.message_type.value)
         except Exception as e:
-            logger.debug("Failed to gossip to %s:%d - %s", host, port, e)
+            logger.warning(
+                "gossip_send_failed to=%s type=%s err=%s",
+                target, msg.message_type.value, e,
+            )
