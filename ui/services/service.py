@@ -195,7 +195,7 @@ class Service:
                         # produces "protocol_error: Missing required fields" warnings
                         # on the remote machine because our discovery listener can't
                         # parse Distribution's chat-message JSON schema.
-                        self.history_service.request_missing_history(peer_addresses=[(host, self.chat_port)])
+                        self.history_service.request_missing_history()
 
                     self.user_connected(event.display_name, host)
                 elif event.event_type == EventType.LEAVE_CONFIRMED:
@@ -223,8 +223,7 @@ class Service:
 
         if self.history_service is not None and ip:
             sleep(1.0)
-            seed_host = ip.rsplit(":", 1)[0] if ":" in ip else ip
-            self.history_service.request_missing_history(peer_addresses=[(seed_host, self.chat_port)])
+            self.history_service.request_missing_history()
 
         if self.history_service is not None:
             message_history = self.history_service.get_recent_messages(100)
