@@ -1,10 +1,20 @@
-"""Bootstrap logic for joining the network."""
-import base64
-import json
+"""Bootstrap logic for joining the network.
+
+The joiner sends its JOIN_REQUEST through Distribution's BroadcastNode (port
+5678). The response arrives asynchronously via Distribution's on_message →
+chat_service.message_received → DiscoveryNode.handle_message →
+DiscoveryNode._handle_join_response — which sets a threading.Event keyed by
+the seed's bootstrap_peers entry. attempt_bootstrap waits on that Event
+with bootstrap_timeout.
+"""
 import logging
+import threading
 from typing import TYPE_CHECKING
 
-from peer_discovery.network.protocol import MessageType, NetworkMessage
+from peer_discovery.network.protocol import (
+    SUBTYPE_JOIN_REQUEST,
+    encode_discovery_envelope,
+)
 
 if TYPE_CHECKING:
     from peer_discovery.network.discovery_node import DiscoveryNode
@@ -26,7 +36,7 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
         res = node.service.join_member(
             user_id=node.advertise_address,
             display_name=display_name,
-            public_key=node.crypto.get_public_key_bytes(),
+            public_key=node.public_key_pem,
         )
         logger.info(
             "bootstrap_seed_join accepted=%s seq_no=%d version=%d reason=%s",
@@ -39,91 +49,90 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
         node.config.bootstrap_peers, node.config.bootstrap_timeout,
     )
 
+    if node.broadcast_node is None:
+        logger.error(
+            "bootstrap_no_broadcast_node — DiscoveryNode was constructed "
+            "without a BroadcastNode reference. Cannot join the network."
+        )
+        return False
+
+    return _attempt_bootstrap_via_broadcast_node(node, display_name)
+
+
+def _attempt_bootstrap_via_broadcast_node(node: 'DiscoveryNode', display_name: str) -> bool:
+    """Send JOIN_REQUEST through Distribution's BroadcastNode.send_to_peer.
+
+    The response (JOIN_RESPONSE) arrives asynchronously via on_message →
+    DiscoveryNode.handle_message → _handle_join_response, which sets a
+    threading.Event keyed by the seed's advertise_address. We wait on it
+    with bootstrap_timeout. Each peer is tried in order until one succeeds.
+    """
+    from distribution.message import Message
+
+    timeout = node.config.bootstrap_timeout or 5.0
+
     for peer in node.config.bootstrap_peers:
         try:
             host, port_str = peer.split(":")
             port = int(port_str)
         except ValueError:
-            logger.error("bootstrap_invalid_peer peer=%s expected_format=host:port", peer)
-            continue
-
-        pubkey_b64 = base64.b64encode(node.crypto.get_public_key_bytes()).decode()
-        req = NetworkMessage(
-            message_type=MessageType.JOIN_REQUEST,
-            sender_id=node.advertise_address,
-            payload={"display_name": display_name, "public_key_b64": pubkey_b64},
-        )
-
-        logger.info(
-            "bootstrap_attempt peer=%s sender_id=%s display_name=%s pubkey_bytes=%d",
-            peer, node.advertise_address, display_name,
-            len(node.crypto.get_public_key_bytes()),
-        )
-
-        try:
-            resp = node.client.send_and_receive(host, port, req)
-        except Exception as e:
-            logger.warning(
-                "bootstrap_send_failed peer=%s err=%s — likely firewall, AP isolation, "
-                "or seed not running yet",
-                peer, e,
-            )
-            continue
-
-        if not resp:
-            logger.warning("bootstrap_no_response peer=%s — TCP closed before reply", peer)
-            continue
-
-        if resp.message_type != MessageType.JOIN_RESPONSE:
-            logger.warning(
-                "bootstrap_wrong_reply_type peer=%s got=%s expected=JOIN_RESPONSE",
-                peer, resp.message_type,
-            )
-            continue
-
-        status = resp.payload.get("status")
-        if status != "accepted":
-            reason = resp.payload.get("reason", "unknown")
-            logger.error("bootstrap_rejected peer=%s reason=%s", peer, reason)
-            return False
-
-        encrypted_snapshot = resp.payload.get("encrypted_snapshot")
-        if not encrypted_snapshot:
-            logger.error("bootstrap_response_missing_snapshot peer=%s", peer)
-            continue
-
-        try:
-            from peer_discovery.membership.models import MembershipEvent
-
-            ciphertext = base64.b64decode(encrypted_snapshot)
-            logger.info(
-                "bootstrap_decrypting peer=%s ciphertext_bytes=%d", peer, len(ciphertext),
-            )
-            plaintext = node.crypto.decrypt(ciphertext)
-            events_data = json.loads(plaintext.decode("utf-8"))
-            events = [MembershipEvent.from_dict(d) for d in events_data]
-
-            logger.info(
-                "bootstrap_applying_snapshot peer=%s events=%d types=%s",
-                peer, len(events),
-                [e.event_type.value for e in events],
-            )
-            node.service.apply_remote_snapshot(events)
-
-            snap = node.service.get_membership_snapshot()
-            logger.info(
-                "bootstrap_success peer=%s applied=%d members_now=%d active_now=%d",
-                peer, len(events), len(snap.members), snap.active_count,
-            )
-            return True
-
-        except Exception as e:
             logger.error(
-                "bootstrap_decrypt_or_apply_failed peer=%s err=%s — likely "
-                "wrong seed pubkey or snapshot corruption",
-                peer, e,
+                "bootstrap_invalid_peer peer=%s expected_format=host:port", peer,
             )
             continue
+
+        # Register a pending-response Event keyed by the seed's address.
+        # _handle_join_response will set this when JOIN_RESPONSE arrives.
+        event = threading.Event()
+        with node._pending_joins_lock:
+            node._pending_joins[peer] = event
+
+        try:
+            req_content = encode_discovery_envelope(
+                subtype=SUBTYPE_JOIN_REQUEST,
+                sender_pub_pem=node.public_key_pem,
+                payload={"display_name": display_name},
+            )
+            req = Message(content=req_content, sender=node.advertise_address)
+
+            logger.info(
+                "bootstrap_attempt peer=%s sender_id=%s display_name=%s pubkey_bytes=%d "
+                "via=BroadcastNode.send_to_peer",
+                peer, node.advertise_address, display_name, len(node.public_key_pem),
+            )
+
+            try:
+                node.broadcast_node.send_to_peer(host, port, req)
+            except Exception as e:
+                logger.warning(
+                    "bootstrap_send_failed peer=%s err=%s — likely firewall, "
+                    "AP isolation, or seed not running yet",
+                    peer, e,
+                )
+                continue
+
+            # Wait for the seed's JOIN_RESPONSE to arrive (sets the Event).
+            if event.wait(timeout=timeout):
+                snap = node.service.get_membership_snapshot()
+                if snap.active_count > 0:
+                    logger.info(
+                        "bootstrap_success peer=%s members_now=%d active_now=%d",
+                        peer, len(snap.members), snap.active_count,
+                    )
+                    return True
+                # Event fired but no active members — the response was a
+                # rejection (see earlier discovery_join_response_rejected log).
+                logger.error("bootstrap_response_was_rejection peer=%s", peer)
+                continue
+            else:
+                logger.warning(
+                    "bootstrap_no_response peer=%s — no JOIN_RESPONSE within %.1fs",
+                    peer, timeout,
+                )
+                continue
+        finally:
+            with node._pending_joins_lock:
+                node._pending_joins.pop(peer, None)
 
     logger.error(
         "bootstrap_all_peers_failed peers=%s — node will run isolated",
@@ -131,100 +140,3 @@ def attempt_bootstrap(node: 'DiscoveryNode', display_name: str) -> bool:
     )
     return False
 
-
-def handle_join_request(node: 'DiscoveryNode', source_ip: str, msg: NetworkMessage) -> NetworkMessage:
-    """Handle an incoming JOIN_REQUEST."""
-    display_name = msg.payload.get("display_name", "Unknown")
-    pk_b64 = msg.payload.get("public_key_b64")
-
-    logger.info(
-        "join_request_received source_ip=%s sender_id=%s display_name=%s pubkey_present=%s",
-        source_ip, msg.sender_id, display_name, bool(pk_b64),
-    )
-
-    if not pk_b64:
-        logger.warning(
-            "join_request_rejected source_ip=%s sender_id=%s reason=missing_public_key_b64",
-            source_ip, msg.sender_id,
-        )
-        return NetworkMessage(
-            message_type=MessageType.JOIN_RESPONSE,
-            sender_id=node.advertise_address,
-            payload={"status": "rejected", "reason": "Missing public_key_b64"}
-        )
-
-    try:
-        pub_key = base64.b64decode(pk_b64)
-    except Exception as e:
-        logger.warning(
-            "join_request_rejected source_ip=%s sender_id=%s reason=bad_pubkey_b64 err=%s",
-            source_ip, msg.sender_id, e,
-        )
-        return NetworkMessage(
-            message_type=MessageType.JOIN_RESPONSE,
-            sender_id=node.advertise_address,
-            payload={"status": "rejected", "reason": "Invalid public_key encoding"}
-        )
-
-    context = {
-        "source_address": source_ip,
-        "public_key": pub_key,
-    }
-
-    res = node.service.join_member(
-        user_id=msg.sender_id,
-        display_name=display_name,
-        public_key=pub_key,
-        context=context
-    )
-
-    if not res.accepted:
-        logger.warning(
-            "join_request_rejected_by_validator sender_id=%s reason=%s",
-            msg.sender_id, res.reason,
-        )
-        return NetworkMessage(
-            message_type=MessageType.JOIN_RESPONSE,
-            sender_id=node.advertise_address,
-            payload={"status": "rejected", "reason": res.reason}
-        )
-
-    snap = node.service.get_membership_snapshot()
-    events = node.service._coordinator._log.get_events_since(0)
-    events_data = [e.to_dict() for e in events]
-    plaintext = json.dumps(events_data).encode("utf-8")
-
-    logger.info(
-        "join_request_accepted sender_id=%s seq_no=%d members_now=%d events_to_send=%d "
-        "plaintext_bytes=%d",
-        msg.sender_id, res.seq_no, len(snap.members), len(events), len(plaintext),
-    )
-
-    try:
-        ciphertext = node.crypto.encrypt_for(plaintext, pub_key)
-        encrypted_b64 = base64.b64encode(ciphertext).decode()
-    except Exception as e:
-        logger.error(
-            "join_request_encrypt_failed sender_id=%s err=%s — joiner's pubkey "
-            "may be malformed or incompatible",
-            msg.sender_id, e,
-        )
-        return NetworkMessage(
-            message_type=MessageType.JOIN_RESPONSE,
-            sender_id=node.advertise_address,
-            payload={"status": "error", "reason": "Crypto failure on server"}
-        )
-
-    logger.info(
-        "join_response_sending to=%s ciphertext_bytes=%d events=%d",
-        msg.sender_id, len(ciphertext), len(events),
-    )
-
-    return NetworkMessage(
-        message_type=MessageType.JOIN_RESPONSE,
-        sender_id=node.advertise_address,
-        payload={
-            "status": "accepted",
-            "encrypted_snapshot": encrypted_b64
-        }
-    )

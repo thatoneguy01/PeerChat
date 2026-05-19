@@ -79,16 +79,18 @@ Any one of these would suffice in isolation; the three together give us a hard g
 
 Gossip alone does not preserve order: two messages following different random paths can arrive at a third peer in reversed order. Wall-clock timestamps cannot fix this — clocks drift, and there is no global clock in a P2P network.
 
-Each node maintains a vector clock: a dict mapping peer addresses to integer counters. On send, the originator increments its own entry and attaches the snapshot to the message. On receive, a peer checks whether the message is **causally ready** — i.e., whether every message the sender had seen at send time has already been delivered locally. If not ready, the message is buffered in a hold-back queue and re-checked after each subsequent delivery.
+Each node maintains a vector clock: a dict mapping peer addresses to integer counters. On send, the originator **signs the message first, then increments its own VC entry** and attaches the snapshot. This ordering is a correctness requirement: if signing fails, the VC must not advance — a skipped sequence number would permanently stall every subsequent message in every peer's hold-back queue. On receive, a peer checks whether the message is **causally ready** — whether every message the sender had seen at send time has already been delivered locally. If not ready, the message is buffered in a hold-back queue and re-checked after each subsequent delivery.
 
-The readiness check (see `distribution/vector_clock.py::VectorClock.is_ready`) is:
+The readiness check (`distribution/vector_clock.py::VectorClock.is_ready`) is:
 
 1. `VC_M[sender] == VC_R[sender] + 1` — this is the next message from the sender, no gap.
 2. For all other entries, `VC_M[k] ≤ VC_R[k]` — we have already seen everything the sender had seen.
 
 On delivery, the receiver merges the incoming vector clock element-wise (`max`) into its own, then drains the hold-back queue — released messages may unblock others in a cascade.
 
-This gives us **causal order** (CO): if A → B, every peer delivers A before B. It does not give us total order across concurrent messages — two messages with no causal relationship may interleave differently at different peers. This is acceptable for chat: users observe no causal dependency between concurrent messages, so the interleaving is not user-visible.
+**Liveness under quiet networks.** `drain()` is only called when a new message arrives. In a network that goes quiet after a message is buffered, the hold-back queue would never be re-checked. We address this with two mechanisms: a `HOLDBACK_TIMEOUT` of 5 seconds (messages waiting longer are delivered out-of-order with a warning), and a background `_holdback_drain_task` coroutine that calls `drain()` every 2 seconds so the timeout fires promptly regardless of traffic.
+
+This gives us **causal order** (CO): if A → B, every peer delivers A before B. It does not give us total order across concurrent messages — two messages with no causal relationship may interleave differently at different peers. This is acceptable for chat: users observe no causal dependency between concurrent messages.
 
 ### 3.5 Transport — WebSockets
 
@@ -160,7 +162,7 @@ All 34 tests pass. The integration test suite serves as the contract regression 
 ## 7. Known limitations
 
 1. **Seen-set grows without bound.** Production would bound by time window or LRU cap. Acceptable at demo scale.
-2. **Hold-back queue can stall** if a causal predecessor is permanently lost. Mitigated at demo scale by broadcast + retries making permanent loss unlikely.
+2. **Hold-back queue degrades to out-of-order delivery** if a causal predecessor is permanently lost. After a 5-second timeout, the stuck message is delivered out-of-order with a warning rather than stalling the queue indefinitely.
 3. **Offline peers do not receive messages sent while they were offline.** Recovery is the History team's replay path.
 4. **No wire-level encryption.** Security signs; encryption is a stretch.
 5. **Single global room.** `Message` carries no `room_id`; extending to multi-room is a straightforward additive change.
@@ -175,7 +177,7 @@ All 34 tests pass. The integration test suite serves as the contract regression 
 | Bhuvana (POC) | Integration contracts (Security, Peer Discovery, History); end-to-end integration test; this report section; README refresh; PR/merge coordination |
 | Asha | `BroadcastNode` implementation; vector clock integration into broadcast/receive |
 | Anukrithi | De-duplication (atomic seen-set); loop prevention (TTL + sender exclusion); unit tests |
-| Shamathmika | Vector clock design doc; `VectorClock` + `HoldBackQueue` implementation and tests |
+| Shamathmika | Vector clock design doc; `VectorClock` + `HoldBackQueue` implementation and unit tests; hold-back timeout and background drain task for liveness under quiet networks |
 | Manasa | WebSocket transport inside `BroadcastNode` |
 | Peer-integration teammate | `MembershipRouter` wired to Peer Discovery's `MembershipService` |
 

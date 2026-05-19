@@ -213,7 +213,7 @@ Register a listener on `on_message` for logging. Replay backlog to newly-joined 
 ## Known Limitations
 
 - **Seen-set grows without bound.** Fine for demo scale; production would bound by time window or LRU.
-- **Hold-back queue can stall** if a predecessor message is permanently lost. Acceptable here because gossip + retries make permanent loss unlikely at demo scale.
+- **Hold-back queue degrades to out-of-order delivery** if a predecessor message is permanently lost. After a 5-second timeout, stuck messages are delivered out-of-order with a warning rather than held indefinitely.
 - **Offline delivery is out of scope.** The History team replays to reconnected peers.
 - **No wire-level encryption.** The Security team signs; encryption is a stretch.
 

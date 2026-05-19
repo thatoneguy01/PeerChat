@@ -1,8 +1,7 @@
-# Vector Clock & Causal Ordering Implementation Plan
+# Vector Clock & Causal Ordering
 
 **Component:** Message Distribution  
-**Author:** shamathmika  
-**Branch:** `feat/message-distribution`
+**Author:** shamathmika
 
 ---
 
@@ -58,43 +57,65 @@ If either condition fails, R places M in a **hold-back queue** and re-checks rea
 
 ---
 
-## 5. Changes to the Existing Codebase
+## 5. Implementation
 
-### 5.1 `distribution/message.py`: add `vector_clock` field
+### 5.1 `distribution/message.py`: `vector_clock` field
 
-The `Message` dataclass gains one new field:
+The `Message` dataclass carries one field for causal ordering:
 
 ```
 vector_clock: dict[str, int]   # snapshot of sender's VC at send time; default {}
 ```
 
-Because `Message` already serialises via `dataclasses.asdict` → JSON and deserialises via `Message(**json.loads(...))`, adding a field with a default value is a backward-compatible change. Older nodes that do not yet carry a vector clock will send `{}`, which the causal layer treats as a zeroed clock.
+`Message` serialises via `dataclasses.asdict` → JSON and deserialises via `Message(**json.loads(...))`. The default `{}` means older nodes that do not carry a vector clock are treated as having a zeroed clock and are delivered immediately.
 
-No other changes to `message.py`.
+### 5.2 `distribution/vector_clock.py`
 
-### 5.2 `distribution/vector_clock.py`: new module
+A standalone module with no dependencies on gossip internals, containing two classes:
 
-A standalone module, no dependencies on gossip internals, responsible for:
-
-- **`VectorClock` class**: wraps a `dict[str, int]`, provides `increment(node_id)`, `merge(other)` (element-wise max), and `is_ready(msg, local_vc)` (the readiness check from Section 4).
-- **`HoldBackQueue` class**: buffer of messages waiting on missing predecessors. Exposes `add(msg)` and `drain(local_vc) -> list[Message]` (returns all messages that became ready after a delivery). No internal locking needed; all causal state is accessed from within `BroadcastNode`'s asyncio event loop, which is single-threaded.
+- **`VectorClock`**: wraps a `dict[str, int]`, provides `increment(node_id)`, `merge(other)` (element-wise max), and `is_ready(msg)` (the readiness check from Section 4).
+- **`HoldBackQueue`**: buffer of `(enqueue_time, Message)` pairs. Exposes `add(msg)` and `drain(vc) -> list[Message]`. `drain` first flushes any messages that have exceeded `HOLDBACK_TIMEOUT` (5 seconds) delivering them out-of-order with a warning, then does a cascading pass releasing all causally-ready messages. No internal locking is needed since all causal state is accessed from within `BroadcastNode`'s asyncio event loop, which is single-threaded.
 
 Keeping this in its own module makes it independently testable without spinning up WebSocket servers.
 
-### 5.3 `distribution/broadcast_node.py`: integrate causal layer
+### 5.3 `distribution/broadcast_node.py`: causal layer integration
 
-`BroadcastNode` owns a `VectorClock` and a `HoldBackQueue`. The touch points are:
+`BroadcastNode` owns a `VectorClock` and a `HoldBackQueue`. The key design points:
 
-**`_do_broadcast(message)`**: increments the local VC entry for `self.address` and writes the resulting vector into `message.vector_clock` before delivering locally and forwarding to peers. This is the async coroutine scheduled by the public `broadcast()` method.
+**`_do_broadcast(message)`** — sign first, then increment VC:
 
-**`_receive(message)`**: after deduplication via `deduplicate()`, instead of calling `on_message` directly:
-1. Check `VectorClock.is_ready(message)`.
-2. If ready: merge incoming VC into local VC, deliver (`on_message`), then call `drain()` to check whether any buffered messages are now ready (delivering them in order).
-3. If not ready: add to `HoldBackQueue`.
+```python
+if not self._sign_outgoing(message):
+    return False          # sign failure: VC is NOT incremented, no gap left
+self._vc.increment(self.address)
+message.vector_clock = self._vc.snapshot()
+```
 
-The existing deduplication logic (`deduplicate()`) is unchanged and still runs first, so the hold-back queue never accumulates duplicates. Forwarding to peers via `_forward()` always happens regardless of causal readiness, so other peers receive the message and can make their own causal decision.
+Signing before incrementing is a correctness requirement: if signing fails (e.g. key not yet loaded), the VC must not advance. A gap in the sender's VC sequence would permanently stall all subsequent messages in every other node's hold-back queue.
 
-The public API (`start`, `stop`, `broadcast`, `on_message`) is unchanged. Other teams do not need to modify their integration code.
+**`_receive(message)`** — causal delivery:
+1. Dedup check via `deduplicate()` — runs first, so the hold-back queue never accumulates duplicates.
+2. Check `VectorClock.is_ready(message)`.
+   - Ready: merge incoming VC, deliver via `on_message`, then call `drain()` for cascading releases.
+   - Not ready: add to `HoldBackQueue`; then call `drain()` in case timeout-expired messages are ready.
+3. Forward to peers regardless of causal readiness — other peers make their own causal decision.
+
+**`_holdback_drain_task`** — background coroutine running every 2 seconds:
+
+```python
+async def _holdback_drain_task(self) -> None:
+    while not self._stop_event.is_set():
+        await asyncio.sleep(HOLDBACK_DRAIN_INTERVAL)   # 2 s
+        if self._hold_back._queue:
+            released = self._hold_back.drain(self._vc)
+            for msg in released:
+                if self.on_message:
+                    self.on_message(msg)
+```
+
+Without this, the hold-back timeout only fires when a new message arrives to trigger `drain()`. In a quiet network a stuck message could sit well past 5 seconds. The background task ensures liveness even when no new messages are arriving.
+
+The public API (`start`, `stop`, `broadcast`, `on_message`) is unchanged.
 
 ---
 
@@ -111,11 +132,11 @@ The public API (`start`, `stop`, `broadcast`, `on_message`) is unchanged. Other 
 
 ## 7. Known Limitations
 
-**Hold-back queue can grow unboundedly** if a predecessor message is permanently lost (e.g., the sender crashes before all retries are exhausted). A real production system would add a timeout that falls back to delivery-in-arrival-order after waiting too long. For this project, `BroadcastNode`'s ACK/retry mechanism (up to 3 attempts per peer) makes permanent message loss unlikely in a local demo, so this is an acceptable simplification.
+**Hold-back queue timeout.** If a predecessor message is permanently lost (sender crashes before all retries succeed), the queue would stall indefinitely without intervention. The implementation addresses this with a 5-second `HOLDBACK_TIMEOUT`: messages waiting longer than that are delivered out-of-order with a warning log, unblocking the queue. A background drain task (`_holdback_drain_task`) runs every 2 seconds so the timeout fires promptly even in a quiet network where no new messages arrive to trigger a drain.
 
-**New nodes start with a zeroed clock.** A node joining mid-conversation has `VC[k] = 0` for all `k`. Messages addressed to it will pass the readiness check immediately, meaning it may receive causally ordered messages for the ongoing conversation but will not see older history. That is the Recovery & Storage team's responsibility (log replay).
+**New nodes start with a zeroed clock.** A node joining mid-conversation has `VC[k] = 0` for all `k`. Messages addressed to it pass the readiness check immediately, so it receives causally ordered live messages but not older history. That is the Recovery & Storage team's responsibility (log replay + `sync_vector_clock`).
 
-**Concurrent messages have no guaranteed order.** Two messages with no causal relationship between them may arrive in different orders at different nodes. This is by design and is acceptable for a chat application where the users themselves observe no causal dependency between those messages.
+**Concurrent messages have no guaranteed order.** Two messages with no causal relationship between them may arrive in different orders at different nodes. This is by design and acceptable for chat: users observe no causal dependency between concurrent messages, so the interleaving difference is not user-visible.
 
 ---
 

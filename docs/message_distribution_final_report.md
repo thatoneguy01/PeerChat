@@ -1,9 +1,8 @@
-# Final Project Report Draft — Message Distribution
+# Final Project Report — Message Distribution
 
-**Team:** Asha, Bhuvana, Shamathmika, Anukrithi, Manasa  
+**Team:** Asha, Bhuvana Komati, Shamathmika, Anukrithi Myadala, Manasa  
 **Module:** Message Distribution  
 **Project:** PeerChat, one-room peer-to-peer chat  
-**Status:** Draft for everyone to fill in before final submission
 
 ---
 
@@ -11,7 +10,7 @@
 
 The class project is a peer-to-peer chat program with one shared chat room. Since there is no central chat server, message distribution has to do the job that a server normally does: make sure a message sent by one peer reaches every other active peer.
 
-Our part sounds simple at first: "send the message to everyone." In practice, the hard parts were making that happen without duplicate deliveries, loops, message storms, ordering bugs, or breaking the work from Peer Discovery, History/Recovery, Security, and UI.
+Our part sounds simple at first: "send the message to everyone." In practice, the hard parts were making that happen without duplicate deliveries, loops, message storms, ordering bugs, or breaking the work from Peer Discovery, History/Recovery, Security, and UI. In a peer-to-peer network, the same message can arrive from more than one path, a peer can disappear while another peer is forwarding, and a recovery message for one node can accidentally turn into traffic for the whole room if the interface is wrong.
 
 The main question for our team was:
 
@@ -24,12 +23,13 @@ The guarantees we worked toward were:
 - Forwarding should eventually stop, even if the network graph has cycles.
 - History recovery should be able to send old messages to one recovering node without flooding everyone.
 - Causal metadata should move with the message so History and ordering logic can reason about missing messages.
+- Invalid or unsigned messages should be rejected before the node accepts, stores, displays, or forwards them.
 
 ---
 
 ## 2. High-Level Design
 
-Message Distribution sits between the UI/History/Security layers and the network transport.
+Message Distribution sits between the UI/History/Security layers and the network transport. The current implementation centers on one public object, `BroadcastNode`. It is intentionally small from the outside: other modules call `broadcast(message)`, `send_to_peer(host, port, message)`, `start()`, `stop()`, and register an `on_message` callback.
 
 ```text
 UI / History / Security
@@ -39,6 +39,8 @@ BroadcastNode
   - duplicate suppression
   - TTL loop prevention
   - vector clock metadata
+  - signature verification gate
+  - per-peer encrypted payloads
   - WebSocket send/receive
   - direct send for recovery
         |
@@ -51,7 +53,22 @@ The current design uses WebSockets for peer-to-peer transport. Peer Discovery pr
 - **broadcast messages** for normal live chat, or
 - **direct messages** for History recovery chunks.
 
-This split became important later because History did not want to recover one node by broadcasting every old chunk to the entire network.
+This split became important later because History did not want to recover one node by broadcasting every old chunk to the entire network. Broadcast is correct for live chat because everyone in the room should see the new message. Direct send is correct for recovery because only the recovering peer needs the missing chunks.
+
+The final send path is:
+
+```text
+UI creates Message
+Distribution deduplicates local send
+Security signs stable message fields
+Distribution stamps vector clock
+Distribution delivers locally
+Distribution encrypts a peer-specific copy for each target
+Distribution sends over WebSocket with ACK/retry
+Receiver verifies signature before ACK/dedup/delivery/forwarding
+Receiver checks vector clock ordering
+Receiver delivers to UI/History and forwards if ttl > 0
+```
 
 ---
 
@@ -59,55 +76,63 @@ This split became important later because History did not want to recover one no
 
 | Team | What Message Distribution Needs | What We Provide Back |
 |---|---|---|
-| Peer Discovery | A current list of reachable peers and membership events | We send messages to those peers and react when peers join/leave |
-| Security | Signed/encrypted message payloads and key metadata when ready | We carry the message object over the network without changing the signed content |
-| History/Recovery | A way to receive live messages and a way to send recovery chunks to one peer | `on_message` callback and `send_to_peer(host, port, message)` |
+| Peer Discovery | A current list of reachable peers, membership events, and peer public keys | We send messages to those peers and react when peers join/leave |
+| Security | RSA signing/verification, private key startup, public keys from Discovery, and payload encryption helpers | We call sign/encrypt on send and verify/decrypt on receive |
+| History/Recovery | A way to receive live messages and a way to send recovery chunks to one peer | `on_message` callback and `send_to_peer(host, port, message)` with `ttl=0` |
 | UI | A way to submit a message and receive delivered messages | `broadcast(message)` and delivered callback path |
 
-One thing we learned during integration is that "peer-to-peer" still needs a bootstrap story. A new node has to know at least one reachable peer or seed address. After that, Peer Discovery can share the rest of the membership list.
+One thing we learned during integration is that "peer-to-peer" still needs a bootstrap story. A new node has to know at least one reachable peer or seed address. After that, Peer Discovery can share the rest of the membership list. The final app uses a seed-peer model: the first node starts, later nodes join through that known address, and then everyone learns the current members.
+
+We also learned that there are two different ports in the integrated system:
+
+- Peer Discovery listens on its own discovery/bootstrap port.
+- Message Distribution sends live chat over the BroadcastNode chat port, currently `5678`.
+
+Mixing those ports caused confusing protocol errors because a Distribution WebSocket client could accidentally connect to a non-Distribution service. The UI service now maps Discovery membership events to the chat port before adding peers to Distribution's registry.
 
 ---
 
 ## 4. Testing and Validation Plan
 
-We should keep this section updated as the whole class integrates.
+We validated the module at three levels: unit tests, local multi-node tests, and integrated app tests.
 
 Current validation areas:
 
 - Unit tests for duplicate suppression, TTL behavior, direct send, and vector clock behavior.
 - Integration tests with multiple local nodes using WebSockets.
 - History recovery tests that send chunks through Distribution's direct send path.
+- Security gate tests that prove missing signatures, missing public keys, and bad signatures are rejected before ACK/dedup/delivery/forwarding.
+- Payload encryption tests that prove Distribution encrypts per recipient and decrypts before UI display.
 - Root-level pytest so the full repo can be tested from one command.
 - Manual multi-node testing on a LAN/switch before the demo.
 
-Things to still validate together:
+The latest full-repo test run after the newest commits passed:
 
-- Three or more real laptops connected on the same switch.
-- One node temporarily disconnecting and coming back.
-- Live broadcast while History recovery is happening.
-- UI receiving the same message stream that History stores.
-- Security signing/encryption enabled on the same message objects Distribution forwards.
+```text
+298 passed
+```
 
 ---
 
-## 5. Failures and Fixes We Should Mention
+## 5. Failures and Fixes 
 
-These are worth keeping in the report because the failures show what we actually learned.
 
 | Failure / Issue | What It Taught Us | Fix / Current Status |
 |---|---|---|
 | Duplicate messages can arrive from more than one peer | P2P flooding is naturally redundant | Use a seen-message set before delivery/forwarding |
 | A message can loop forever in a cyclic peer graph | Broadcast needs a hard stop condition | Use TTL plus duplicate suppression |
 | Recovery chunks should not be broadcast to everyone | History backfill can become unnecessary network traffic | Added direct peer send path |
-| Vector-clock holdback can block live messages after recovery | Recovery and live delivery share causal state | Sync vector clock after recovery completes |
-| Tests passed inside a subfolder but failed from repo root | Integration tests need the same command everyone will run | Added `message-history/tests/conftest.py` |
+| Vector-clock holdback can block live messages after recovery | Recovery and live delivery share causal state | Sync vector clock after recovery completes and use a short hold-back timeout |
+| Tests passed inside a subfolder but failed from repo root | Integration tests need the same command everyone will run | Added root-test path support for Message History tests |
 | Different teams used slightly different assumptions | Interfaces matter as much as code | Added docs and kept API small |
+| Chat was accidentally sent to a Discovery port | A reachable peer address is not enough; the service port matters | UI service maps discovery members to the Distribution chat port |
+| Unsigned or missing-key messages could pass too far | Verification has to happen before ACK/dedup/delivery | Distribution now verifies before accepting or forwarding |
+| Security signing key was initialized but not configured for `sign()` | Startup wiring matters as much as library code | `main.py` configures the private key after key-store startup |
+| Vector-clock holdback could create a multi-minute UI delay | Strong ordering without liveness looks broken to users | Hold-back timeout reduced to 5 seconds with a background drain task |
 
 ---
 
 ## 6. Individual Sections
-
-Each person can replace the placeholder text below with their work, tests, issues, and lessons learned. Try to include both what worked and what failed.
 
 ### 6.1 Asha
 
@@ -143,8 +168,8 @@ When a node comes back online, History needs to replay old messages to it. If th
 *Re-syncing causal state after recovery.*  
 After History finishes replaying old messages to a recovering node, Distribution's vector clock is still zeroed. Any live messages that arrived during recovery fail the causal readiness check (built by Shamathmika) and pile up in hold-back. `sync_vector_clock(vc)` accepts the latest clock from the recovered message set, merges it into the local state, and drains the hold-back queue. History calls this once recovery is complete. Without it, a recovered node would display old messages correctly but silently stop showing new ones.
 
-*Carrying Security payloads without modification.*  
-Messages have a `signature` field populated by the Security team before `broadcast()` is called. Distribution forwards the message object as-is over WebSockets. It never reads, modifies, or strips the signed content, so the receiving peer gets the exact bytes that Security signed. Verification happens at the Security layer on the receiving side; Distribution's only responsibility is not to corrupt what it carries.
+*Carrying Security payloads safely.*
+In the current integrated path, Distribution calls the Security team's signing and verification functions directly. On send, `BroadcastNode` signs the stable message fields and then prepares peer-specific encrypted copies for the wire. On receive, it verifies the signature before ACK, deduplication, delivery, or forwarding. Distribution still does not decide whether a signature is cryptographically valid itself; it owns the order and placement of those Security calls so invalid messages do not reach UI, History, or the rest of the network.
 
 **Tests / validation:**  
 
@@ -224,9 +249,11 @@ The vector clock tracks how many messages each node has sent. Every outgoing mes
 
 The hold-back queue buffers out-of-order messages and re-checks them after every delivery. A single delivery can cascade: delivering M1 updates the local clock, which may unblock M2, which unblocks M3, and so on. The drain loop repeats until a full pass produces nothing new.
 
-The hold-back queue also has a 30-second timeout. If a predecessor message is permanently lost, messages waiting for it would be stuck forever. After the timeout, a stuck message is delivered out of causal order with a warning rather than held indefinitely. The timeout also merges the stuck message's clock so its successors can cascade out in the same drain pass.
+The hold-back queue has a 5-second timeout. If a predecessor message is permanently lost, messages waiting for it would be stuck forever. After the timeout, a stuck message is delivered out of causal order with a warning rather than held indefinitely. The timeout also merges the stuck message's clock so its successors can cascade out in the same drain pass.
 
-I also added `sync_vector_clock` to `BroadcastNode`. When a node restarts, its vector clock is zeroed. Live messages referencing history the node missed fail the causal check and pile into hold-back. `sync_vector_clock(recovered_vc)` merges the recovered clock into the local state and drains the hold-back queue, unblocking any stuck messages. A related fix ensures the hold-back queue drains on every incoming message, not only on messages that pass the causal check, so the timeout actually fires in low-traffic conditions.
+To ensure the timeout fires regardless of traffic, drain is called by a background coroutine (`_holdback_drain_task`) that runs every 2 seconds inside the asyncio event loop. Without this, drain only runs when a new message arrives. In a quiet network, a buffered message could remain past its timeout indefinitely because nothing triggers a re-check.
+
+I also added `sync_vector_clock` to `BroadcastNode`. When a node restarts, its vector clock is zeroed. Live messages referencing history the node missed fail the causal check and pile into hold-back. `sync_vector_clock(recovered_vc)` merges the recovered clock into the local state and drains the hold-back queue, unblocking any stuck messages.
 
 **Tests / validation:**  
 Tests cover the full vector clock and hold-back behavior:
@@ -247,32 +274,38 @@ Tests cover the full vector clock and hold-back behavior:
 
 **Problems found and fixes:**  
 
-1. **Hold-back queue stalls permanently in low-traffic conditions.**  
-   The timeout check only runs inside `drain()`, and `drain()` was only called when a message passed the causal check. If no message ever passes (for example, because the clock is zeroed after a restart), the timeout never fires and the queue is stuck indefinitely. The fix was to call `drain()` on every incoming message regardless of whether it passed the causal check.
+1. **Hold-back timeout does not fire in low-traffic conditions.**  
+   The timeout check runs inside `drain()`, but `drain()` was only called when a new message arrived and passed the causal check. In a quiet network where traffic stops after a message is buffered, the timeout never fires and the queue stalls indefinitely. The fix was a background coroutine that calls `drain()` every 2 seconds so the timeout fires based on wall time rather than on incoming traffic.
 
 2. **Node restarts with a zeroed vector clock, blocking all live messages.**  
    After a restart, the local clock is `{}`. Any live message with a clock like `{node1: 5}` fails `5 != 0+1` and goes into hold-back. The fix is `sync_vector_clock`, which merges the recovered clock into the local state and drains the hold-back queue in one operation.
 
 3. **Timeout delivery creates a permanent ordering violation for late predecessors.**  
-   When a timed-out message is force-delivered, the local clock advances past the gap. If the missing predecessor arrives later, it fails the sequence check and goes back into hold-back where it will time out again. This is a known limitation: one permanently lost message cascades into an ordering violation for everything behind it.
+   When a timed-out message is force-delivered, the local clock advances past the gap. If the missing predecessor arrives later, it fails the sequence check and goes into hold-back again where it will time out again. One permanently lost message cascades into an ordering violation for everything behind it. This is a known limitation of timeout-based approaches to causal ordering.
 
 **What I learned:**  
-Causal ordering is not a property of sending order, it is a property of what each node has seen. Messages can arrive out of order for normal network reasons and the system has to buffer them without stalling indefinitely. Vector clocks provide the metadata and the hold-back queue provides the mechanism, but correctness and liveness are in tension. A strict causal check is correct but can block forever if a predecessor is lost. The timeout is a deliberate tradeoff: progress is more useful than strict ordering when a message is gone for good. Making that tradeoff explicit and understanding what it costs is more valuable than avoiding the problem.
+The most significant realization was that correctness and liveness require separate mechanisms. The causal readiness check is sufficient to guarantee ordering under normal conditions, but it provides no bound on how long a message can wait. The timeout addresses liveness, and the background drain task makes the timeout meaningful in practice rather than only in theory. These are distinct design concerns, and conflating them leads to implementations that appear correct in unit tests but fail under realistic traffic patterns.
+
+Working with other teams also illustrated that module-level correctness does not imply system-level correctness. Some failure modes only emerge when two independently correct components interact in a way that neither team's tests would exercise. This reinforced the importance of integration testing across module boundaries, not just within individual components.
 
 ---
 
 ### 6.4 Anukrithi
 
 **Main work:**  
-I worked on the parts that I pushed to the main repo: duplicate suppression behavior, loop-prevention behavior, tests for those cases, the direct-send API that History needed for recovery chunks, and a small root-pytest fix. My focus was making sure that as messages flood through the peer network, each node processes a message only once and does not accidentally create a broadcast storm.
+My work was mostly in the "make the broadcast path safe" category. I pushed the duplicate-suppression and loop-prevention tests, helped add the direct-send API that History needed for recovery chunks, fixed a root-level pytest issue, and later wired two Security checks into the Distribution path. The common theme was making sure a message can move through a noisy peer network without being processed twice, forwarded forever, or accepted when it fails the Security contract.
 
-The first part was duplicate suppression. In a peer-to-peer broadcast, the same message can reach a node from multiple neighbors. That is normal and not automatically an error, but it becomes a bug if the node stores it twice, shows it twice in the UI, or forwards it again. I updated and tested the `BroadcastNode` behavior so a duplicate message ID is dropped before it is delivered or forwarded again.
+The deduplication work came from a very basic P2P problem: the same message can reach a node from multiple neighbors. That is normal network behavior, not automatically an error. It only becomes a bug when the node stores it twice, shows it twice in the UI, or forwards it again. I tested and helped lock down the `BroadcastNode` behavior so each node treats the message UUID as the identity of the message. Once a UUID is seen, later arrivals with the same ID are dropped before delivery or forwarding.
 
-The second part was loop prevention. Duplicate suppression handles repeated message IDs, but TTL gives us a second safety net. A message with `ttl == 0` is allowed to be delivered locally, but it is not forwarded again. When a node does forward a message, it forwards a copy with TTL decremented. I added tests for this because a small mutation bug here could make the delivered message look different from what the upper layers expected.
+Loop prevention was the other half of that same problem. Deduplication stops repeated processing, but TTL gives the network a hard stop even if the peer graph has cycles or a bug causes repeated forwarding attempts. A message with `ttl == 0` can still be delivered locally, but it does not get forwarded again. When a node forwards a message, it forwards a copy with the TTL decremented instead of mutating the object that was delivered locally. I added tests around this because a small object-mutation mistake here would be hard to notice during a manual demo but could confuse History or Security later.
 
-The third part was supporting History recovery. At first, History was using a workaround where recovery chunks could be sent through broadcast with a target-user filter. That technically works, but it wastes network traffic because every peer receives chunks that only one recovering peer needs. I added/validated `send_to_peer(host, port, message)` so History can send recovery chunks directly to one peer. The direct-send path forces `ttl=0`, which means the receiver can save the chunk locally without re-broadcasting old history to everyone.
+The History integration was where the difference between "broadcast" and "send" became really important. The initial recovery workaround was basically to broadcast old chunks with a target-user filter. That technically lets the right peer ignore or accept the right data, but it still makes every peer receive recovery traffic that only one node asked for. I added and validated `send_to_peer(host, port, message)` so History can send recovery chunks directly to one peer. That path forces `ttl=0`, so the receiver can save the chunk locally without re-broadcasting old history to the room.
 
-Finally, I fixed a repo-level testing issue. Message History tests passed when run inside `message-history`, but root `pytest` failed because those tests import `storage` as a local package. I added a small `conftest.py` inside `message-history/tests` so root pytest adds the message-history folder to `sys.path`. This is not a feature change, but it matters because the whole class needs one command that tests the full repo.
+I also fixed a boring but important testing problem. Message History tests passed when run from their own folder, but root `pytest` failed because those tests needed their local package path. I added the small pytest path fix so the whole class can run the full repo from the root instead of remembering per-team test commands. It is not a feature change, but it matters because integration testing only works if everyone can run the same command.
+
+After the Security team added RSA signatures, I updated Distribution so it enforces the contract at the right place in the receive path. Verification now happens before ACK, deduplication, delivery, or forwarding. That order matters more than I expected at first: if we ACK first, the sender thinks the message was accepted; if we dedup first, an invalid message can poison the seen-message set; if we deliver first, UI or History can store bad data. The current behavior is to return a NACK and drop the message when the signature is missing, the sender public key is missing, or verification fails.
+
+One more integration bug showed up on the outgoing side. The key store was being initialized, but the Security module's signing function still needed the private key configured at startup. I updated `main.py` so after the private key is loaded/generated, it calls `configure_private_key(...)`. That made outgoing messages actually sign instead of relying on the key existing somewhere else in the app.
 
 **Tests / validation:**  
 I added and ran tests around the behavior I changed:
@@ -285,7 +318,10 @@ I added and ran tests around the behavior I changed:
 - `test_direct_send_targets_one_peer_and_forces_ttl_zero`
 - `test_direct_send_does_not_use_broadcast_forwarding`
 - integration coverage that checks direct send reaches only the target peer
-- full root `pytest` after the conftest fix
+- reconnect regression coverage for queued direct sends
+- security-gate tests for unsigned, missing-key, and tampered messages
+- key-bootstrap test proving the configured private key can sign and verify a message
+- full root `pytest` after the conftest fix and after the later integration changes
 
 **Problems found and fixes:**  
 
@@ -301,10 +337,18 @@ I added and ran tests around the behavior I changed:
 4. **Root tests failed even though module tests passed.**  
    This was a packaging/path issue, not a logic bug. The fix was a local pytest `conftest.py` for Message History tests so root-level pytest sees the local `storage` package.
 
+5. **Invalid signed-message state could still affect Distribution.**  
+   Security correctly provided signing and verification, but Distribution still had to decide where that check belongs. The first instinct is to verify near delivery, but that is too late. The fix was to verify right after parsing the WebSocket frame and before ACK/dedup/delivery/forward. That way an invalid message cannot be acknowledged, cannot enter the duplicate set, cannot be stored by History, and cannot be forwarded to other peers.
+
+6. **Signing key existed but was not connected to the runtime sign path.**  
+   The app created or loaded a key pair at startup, but `security.sign(msg)` could still fail if the module-level private key was not configured. The fix was to wire `configure_private_key(key_store.get_private_key())` in `main.py` immediately after key initialization.
+
 **What I learned:**  
 The biggest thing I learned is that distributed bugs are often not loud. The program can keep running and still be wrong: duplicate messages can look like normal traffic, loops can look like retries, and recovery traffic can look harmless until it gets multiplied across every peer.
 
 I also learned that the API boundary matters a lot. `broadcast()` and `send_to_peer()` seem like small differences, but they represent totally different network behavior. Broadcast is right for live chat. Direct send is right for recovery. Mixing them makes the system harder to reason about and creates unnecessary load.
+
+The Security fixes taught me the same lesson from another angle: having a good `verify()` function is not enough unless Distribution calls it at the right time. The order of operations is part of the correctness story. For this project, the correct order is verify first, then ACK, dedup, deliver, and forward.
 
 I think our strongest explanation is that Message Distribution is not just "send over WebSockets." It is the layer that decides when a message is new, whether it should be forwarded, where it should go, and when it is safe to deliver.
 
@@ -340,13 +384,16 @@ The fix was to queue failed sends by peer address and flush that queue after the
 What I learned:
 I learned that reconnect logic is an important part of message distribution, not just an edge case. In a peer-to-peer system, peers can leave, restart, or temporarily fail at any time. The system should continue delivering to reachable peers while keeping failed sends recoverable. I also learned that “peer exists” and “peer is ready” are different states, and the handshake/retry queue helped make that distinction clear.
 
-## 7. References / Sources To Keep
+## 7. References
 
-We should update this list as people add their final sections.
+These sources connect directly to the design choices in the module: causal ordering, WebSocket transport, asyncio concurrency, and signature/encryption behavior.
 
 - Leslie Lamport, "Time, Clocks, and the Ordering of Events in a Distributed System," *Communications of the ACM*, 1978.
 - Colin Fidge, "Timestamps in Message-Passing Systems That Preserve the Partial Ordering," 1988.
 - Python `asyncio` documentation: https://docs.python.org/3/library/asyncio.html
 - Python `websockets` documentation: https://websockets.readthedocs.io/
 - MDN WebSocket API overview: https://developer.mozilla.org/en-US/docs/Web/API/WebSocket
+- RFC 6455, "The WebSocket Protocol": https://www.rfc-editor.org/rfc/rfc6455
+- RFC 8017, "PKCS #1: RSA Cryptography Specifications Version 2.2": https://www.rfc-editor.org/rfc/rfc8017
+- NIST SP 800-38D, "Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC": https://csrc.nist.gov/pubs/sp/800/38/d/final
 - Course lectures and class integration discussion on peer-to-peer networking, LAN/switch testing, and distribution algorithms.

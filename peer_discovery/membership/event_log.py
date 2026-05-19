@@ -1,3 +1,21 @@
+"""Append-only event log — the source of truth for membership state.
+
+Every membership transition in the room (JOIN_ACCEPTED, LEAVE_CONFIRMED,
+HISTORY_BACKFILL_*, DISCONNECT_SUSPECTED, DISCONNECT_TIMEOUT, RECONNECTED,
+HEARTBEAT) is appended here as a :class:`MembershipEvent` with a strictly
+monotonic ``seq_no`` per term. Snapshots are derived strictly by replaying
+the log; the log itself is the only thing that ever needs to be durable.
+
+Writes go through :class:`MembershipCoordinator` only (single-writer
+discipline). Reads (`get_events_since`, `len`) are safe from any thread.
+Append is guarded by an internal RLock — the only contention point — but
+control-plane traffic is so low that the lock cost is negligible.
+
+Cross-node consistency is achieved by gossiping each event under the same
+deterministic ID (originator, seq_no, event_type, user_id); receivers
+apply the event through :class:`peer_discovery.membership.snapshot` only
+if the duplicate-guard accepts it.
+"""
 import threading
 import time
 from typing import Any

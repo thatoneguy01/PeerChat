@@ -6,8 +6,12 @@ from security.key_storage import InMemoryKeyStore
 from security.persistent_key_storage import get_platform_key_storage
 from security.key_bootstrap import initialize_private_key_store
 from security import configure_private_key
+import logging
 import threading
 import socket, time
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
 from utils import get_external_ip
 from peer_discovery.network.net_utils import get_lan_ip
 from message_history.storage import HistoryService
@@ -33,6 +37,10 @@ def main():
     node = BroadcastNode(host=lan_ip, port=5678, peer_registry=peer_registry)
     node.own_public_key_pem = public_key_pem
     app.chat_service.peer_registry = peer_registry
+    # Expose the BroadcastNode to chat_service so DiscoveryNode can route
+    # JOIN_REQUEST / JOIN_RESPONSE / gossip / heartbeat through the shared
+    # Distribution transport (port 5678) instead of its own listener.
+    app.chat_service.broadcast_node = node
 
     history = HistoryService(
         node=node,
@@ -48,8 +56,7 @@ def main():
         Message(content=content, sender=node.address)
     )
     node.start()
-    time.sleep(3)
-    
+
     app.run(debug=True, host="127.0.0.1", port=5050, use_reloader=False)
     # ui_thread = threading.Thread(target=run_ui, args=(app,), kwargs={"debug": True, "host": "127.0.0.1", "port": 5050})
     # ui_thread.daemon = True
