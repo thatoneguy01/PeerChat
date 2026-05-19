@@ -95,15 +95,18 @@ class Service:
             return
         self._messages.append({"sender": msg.sender, "timestamp": msg.timestamp, "content": msg.content})
         self._refresh("messages", self._messages)
+        self._refreshes.get("messages", lambda _: None)(self._messages)
 
     def user_connected(self, username: str, ip: str = "0.0.0.0") -> None:
         if not any(u.get("name") == username for u in self._users):
             self._users.append({"name": username, "status": "Online", "ip": ip})
         self._refresh("users", self._users)
+        self._refreshes.get("users", lambda _: None)(self._users)
 
     def user_disconnected(self, username: str, ip: str = "0.0.0.0") -> None:
         self._users[:] = [u for u in self._users if u.get("name") != username]
         self._refresh("users", self._users)
+        self._refreshes.get("users", lambda _: None)(self._users)
 
     def connect(self, username: str, ip: str) -> None:
         if username and not any(u.get("name") == username for u in self._users):
@@ -244,6 +247,8 @@ class Service:
 
         self._refresh("users", self._users)
         self._refresh("messages", self._messages)
+        self._refreshes.get("users", lambda _: None)(self._users)
+        self._refreshes.get("messages", lambda _: None)(self._messages) 
 
     def disconnect(self, username: str) -> None:
         if self.discover_node:
