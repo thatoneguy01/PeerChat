@@ -1,6 +1,6 @@
 # Final Project Report — Peer Discovery
 
-**Team:** Himanshu, Ali, Abhishek
+**Team:** Himanshu, Ali,Asim Mohammed, Abhishek
 **Module:** Peer Discovery & Membership
 **Project:** PeerChat — one-room peer-to-peer chat
 **Status:** Final, 2026-05-18
