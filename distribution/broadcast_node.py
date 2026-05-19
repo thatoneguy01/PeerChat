@@ -197,8 +197,10 @@ class BroadcastNode:
         if websockets is None:
             raise RuntimeError("websockets is required; install with: pip install -r requirements.txt")
         self._stop_event = asyncio.Event()
-        async with websockets.serve(self._handle_ws, self.host, self.port):
-            logger.info("BroadcastNode listening on ws://%s:%d", self.host, self.port)
+        # Bind to 0.0.0.0 to receive traffic on all interfaces (VPN, Wi-Fi, Ethernet),
+        # but keep self.host as the advertised address. (bind-vs-advertise split)
+        async with websockets.serve(self._handle_ws, "0.0.0.0", self.port):
+            logger.info("BroadcastNode listening on ws://0.0.0.0:%d (advertising as %s)", self.port, self.host)
             retry_task = asyncio.ensure_future(self._retry_background_task())
             hello_task = asyncio.ensure_future(self._send_hello_to_all_peers())
             drain_task = asyncio.ensure_future(self._holdback_drain_task())
