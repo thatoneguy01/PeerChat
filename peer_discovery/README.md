@@ -182,7 +182,7 @@ The `peer_discovery.network` package wraps the local `MembershipService` into a 
 - **`lan_ip` autodetect can pick the wrong NIC** on multi-interface hosts (VPN tunnel up, virtual adapter present). Symptom: `bootstrap_no_response`. Fix path is the bind-vs-advertise split.
 - **`JOIN_REQUEST` is plaintext-signed** — the joiner has no recipient pubkey yet. Closing it needs a UI step that captures the seed's pubkey alongside the seed's IP.
 - **One room per process.** `MembershipService.room_id` is set at construction.
-- **No NAT traversal, no TLS, no mDNS.** The advertise address must be reachable peer-to-peer.
+- **No NAT traversal, no TLS, no mDNS.** The advertise address must be reachable peer to peer.
 - **Synchronous subscriber callback dispatch.** A slow callback delays subsequent subscribers.
 
 See [`docs/network_layer.md`](docs/network_layer.md) §8 and [`docs/membership_state_machine.md`](docs/membership_state_machine.md) §10 for the long versions.
